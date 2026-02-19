@@ -1,0 +1,58 @@
+# Python Bytecode files
+*.pyc
+*.pyo
+__pycache__/
+
+# Virtual environment directories
+venv/
+.venv/
+
+# System-specific files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment configuration files
+.env
+*.env
+
+# VS Code settings
+.vscode/
+
+# PyCharm settings
+.idea/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Python egg and distribution files
+*.egg
+*.egg-info
+dist/
+build/
+*.whl
+
+# Test output
+*.coverage
+*.coverage.*
+nosetests.xml
+coverage.xml
+*.hypothesis/
+
+# Pytest
+.cache/
+*.pytest_cache/
+
+# TensorFlow models
+ai_engine/face_module/models/
+
+# Mac specific files (if you're on macOS)
+*.swp
+*~
+
+# Ignore other unnecessary files
+*.bak
+*.tmp
+*.swp
