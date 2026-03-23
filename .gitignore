@@ -35,11 +35,13 @@ build/
 *.whl
 
 # Test output
+storage/
 *.coverage
 *.coverage.*
 nosetests.xml
 coverage.xml
 *.hypothesis/
+logs/
 
 # Pytest
 .cache/
@@ -47,6 +49,7 @@ coverage.xml
 
 # TensorFlow models
 ai_engine/face_module/models/
+ai_engine/head_pose_module/models
 
 # Mac specific files (if you're on macOS)
 *.swp
