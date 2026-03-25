@@ -18,7 +18,9 @@ import base64
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from fastapi.security import OAuth2PasswordRequestForm
 
+from ai_engine.face_module.recognizer import recognizer
 from core.config import settings
 from core.security import (
     hash_password,
@@ -36,6 +38,8 @@ from schemas.auth_schema import (
     FaceVerifyRequest,
     FaceVerifyResponse,
     UserProfileResponse,
+    EnrollFaceRequest,
+    EnrollFaceResponse
 )
 
 logger = logging.getLogger(__name__)
@@ -113,22 +117,57 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────
 #  POST /login
 # ─────────────────────────────────────────────
-@router.post(
-    "/login",
-    response_model=LoginResponse,
-    summary="Login and receive JWT access token",
-)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    """
-    Validates credentials and returns a signed JWT token.
-    The token must be sent as:
-        Authorization: Bearer <token>
-    on all protected routes.
-    """
-    user = db.query(User).filter(User.email == payload.email).first()
+# @router.post(
+#     "/login",
+#     response_model=LoginResponse,
+#     summary="Login and receive JWT access token",
+# )
+# def login(payload: LoginRequest, db: Session = Depends(get_db)):
+#     """
+#     Validates credentials and returns a signed JWT token.
+#     The token must be sent as:
+#         Authorization: Bearer <token>
+#     on all protected routes.
+#     """
+#     user = db.query(User).filter(User.email == payload.email).first()
 
-    # Same error for wrong email AND wrong password — prevents user enumeration
-    if not user or not verify_password(payload.password, user.hashed_password):
+#     # Same error for wrong email AND wrong password — prevents user enumeration
+#     if not user or not verify_password(payload.password, user.hashed_password):
+#         raise HTTPException(
+#             status_code=status.HTTP_401_UNAUTHORIZED,
+#             detail="Invalid email or password",
+#             headers={"WWW-Authenticate": "Bearer"},
+#         )
+
+#     if not user.is_active:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="Account is deactivated. Contact admin.",
+#         )
+
+#     token = create_access_token({
+#         "sub":       user.email,
+#         "user_id":   user.id,
+#         "role":      user.role.value,
+#         "full_name": user.full_name,
+#     })
+
+#     logger.info(f"Login success: {user.email}")
+#     return LoginResponse(
+#         access_token = token,
+#         role         = user.role,
+#         user_id      = user.id,
+#         full_name    = user.full_name,
+#         expires_in   = settings.JWT_EXPIRE_MINUTES * 60,
+#     )
+@router.post("/login", summary="Login and receive JWT access token")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.email == form_data.username).first()
+
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -136,10 +175,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         )
 
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deactivated. Contact admin.",
-        )
+        raise HTTPException(status_code=403, detail="Account deactivated.")
 
     token = create_access_token({
         "sub":       user.email,
@@ -147,15 +183,16 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         "role":      user.role.value,
         "full_name": user.full_name,
     })
-
     logger.info(f"Login success: {user.email}")
-    return LoginResponse(
-        access_token = token,
-        role         = user.role,
-        user_id      = user.id,
-        full_name    = user.full_name,
-        expires_in   = settings.JWT_EXPIRE_MINUTES * 60,
-    )
+
+    return {
+        "access_token": token,
+        "token_type":   "bearer",
+        "role":         user.role.value,
+        "user_id":      user.id,
+        "full_name":    user.full_name,
+        "expires_in":   settings.JWT_EXPIRE_MINUTES * 60,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -268,6 +305,125 @@ def verify_face(
             f"threshold={settings.FACE_SIMILARITY_THRESHOLD})"
         ),
     )
+
+
+# ─────────────────────────────────────────────
+#  POST /enroll-face
+# ─────────────────────────────────────────────
+@router.post(
+    "/enroll-face",
+    response_model=EnrollFaceResponse,
+    summary="Store face embedding for the logged-in student",
+)
+def enroll_face(
+    payload    : EnrollFaceRequest,
+    token_data : dict    = Depends(get_current_user_payload),
+    db         : Session = Depends(get_db),
+):
+    """
+    Called once per student — stores their face embedding.
+    Must be called BEFORE /exams/{id}/start.
+ 
+    Flow:
+        1. Frontend / enroll_face.py captures webcam → detector.py
+        2. Gets embedding_base64 from detector result
+        3. POSTs here with JWT token
+        4. We store embedding in DB (User.face_embedding)
+        5. We register it in FaceRecognizer singleton
+        6. Student can now start exams
+ 
+    The embedding is stored as a comma-separated float string in the DB.
+    The recognizer keeps it in memory for fast cosine similarity lookup.
+    """
+    # Get current user
+    user = db.query(User).filter(User.email == token_data["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+ 
+    # Decode and validate embedding
+    try:
+        embedding_bytes = base64.b64decode(payload.embedding_base64)
+        embedding_np    = np.frombuffer(embedding_bytes, dtype=np.float32).copy()
+    except Exception:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Invalid embedding. Must be base64-encoded float32 bytes from detector.py"
+        )
+ 
+    # Validate dimension — FaceNet produces 512-d embeddings
+    if embedding_np.shape[0] != 512:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Wrong embedding dimension: got {embedding_np.shape[0]}, expected 512"
+        )
+ 
+    # 1. Store in DB as comma-separated string
+    user.face_embedding = ",".join(str(x) for x in embedding_np.tolist())
+    db.commit()
+ 
+    # 2. Register in FaceRecognizer singleton (in-memory)
+    success = recognizer.register(
+        user_id   = user.id,
+        full_name = user.full_name,
+        embedding = embedding_np,
+    )
+    if not success:
+        raise HTTPException(500, "Failed to register face in recognizer")
+ 
+    logger.info(f"Face enrolled | user={user.email} | dim={embedding_np.shape[0]}")
+ 
+    return EnrollFaceResponse(
+        message  = "Face enrollment successful. You can now start exams.",
+        email    = user.email,
+        user_id  = user.id,
+        enrolled = True,
+    )
+ 
+ 
+# ─────────────────────────────────────────────
+#  GET /enroll-status
+# ─────────────────────────────────────────────
+@router.get(
+    "/enroll-status",
+    summary="Check if current user has a face enrolled",
+)
+def enroll_status(
+    token_data : dict    = Depends(get_current_user_payload),
+    db         : Session = Depends(get_db),
+):
+    """
+    Quick check before showing the 'Start Exam' button on the frontend.
+    Returns enrolled=false if the student hasn't done face enrollment yet.
+    """
+    user = db.query(User).filter(User.email == token_data["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+ 
+    enrolled    = user.face_embedding is not None
+    in_memory   = recognizer.is_registered(user.id)
+ 
+    # If enrolled in DB but not in memory (server restart), re-load it
+    if enrolled and not in_memory:
+        try:
+            embedding_np = np.array(
+                [float(x) for x in user.face_embedding.split(",")],
+                dtype=np.float32,
+            )
+            recognizer.register(user.id, user.full_name, embedding_np)
+            logger.info(f"Re-loaded face from DB | user={user.email}")
+        except Exception as e:
+            logger.error(f"Failed to reload face embedding: {e}")
+ 
+    return {
+        "email"    : user.email,
+        "enrolled" : enrolled,
+        "message"  : (
+            "Face enrolled. Ready to start exam."
+            if enrolled else
+            "No face enrolled. Run face enrollment before starting exam."
+        ),
+    }
+ 
 
 
 # ─────────────────────────────────────────────
