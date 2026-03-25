@@ -50,6 +50,8 @@ logs/
 # TensorFlow models
 ai_engine/face_module/models/
 ai_engine/head_pose_module/models
+check/
+frontend/node_modules
 
 # Mac specific files (if you're on macOS)
 *.swp
