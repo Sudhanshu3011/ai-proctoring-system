@@ -13,6 +13,8 @@ All routes are versioned under /api/v1/auth via the router prefix
 set in main.py.
 """
 
+import cv2
+import torch
 import logging
 import base64
 import numpy as np
@@ -21,6 +23,7 @@ from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
 
 from ai_engine.face_module.recognizer import recognizer
+from ai_engine.face_module.detector import preprocess_face, inception_resnet
 from core.config import settings
 from core.security import (
     hash_password,
@@ -306,14 +309,13 @@ def verify_face(
         ),
     )
 
-
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  POST /enroll-face
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 @router.post(
     "/enroll-face",
     response_model=EnrollFaceResponse,
-    summary="Store face embedding for the logged-in student",
+    summary="Enroll face — server extracts real FaceNet embedding",
 )
 def enroll_face(
     payload    : EnrollFaceRequest,
@@ -321,64 +323,59 @@ def enroll_face(
     db         : Session = Depends(get_db),
 ):
     """
-    Called once per student — stores their face embedding.
-    Must be called BEFORE /exams/{id}/start.
- 
-    Flow:
-        1. Frontend / enroll_face.py captures webcam → detector.py
-        2. Gets embedding_base64 from detector result
-        3. POSTs here with JWT token
-        4. We store embedding in DB (User.face_embedding)
-        5. We register it in FaceRecognizer singleton
-        6. Student can now start exams
- 
-    The embedding is stored as a comma-separated float string in the DB.
-    The recognizer keeps it in memory for fast cosine similarity lookup.
+    Browser sends a base64 JPEG photo.
+    Server runs it through FaceNet and stores the real 512-d embedding.
+
+    No fake embeddings — this is the production-grade flow.
     """
-    # Get current user
     user = db.query(User).filter(User.email == token_data["sub"]).first()
     if not user:
         raise HTTPException(404, "User not found")
- 
-    # Decode and validate embedding
+
+    # ── Decode image ──────────────────────────────────────────────
     try:
-        embedding_bytes = base64.b64decode(payload.embedding_base64)
-        embedding_np    = np.frombuffer(embedding_bytes, dtype=np.float32).copy()
-    except Exception:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Invalid embedding. Must be base64-encoded float32 bytes from detector.py"
-        )
- 
-    # Validate dimension — FaceNet produces 512-d embeddings
+        img_bytes = base64.b64decode(payload.face_image_base64)
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("Could not decode image")
+    except Exception as e:
+        raise HTTPException(400, f"Invalid image: {e}")
+
+    # ── Extract FaceNet embedding server-side ─────────────────────
+    try:
+        face_tensor = preprocess_face(frame)   # from detector.py
+        with torch.no_grad():
+            embedding = inception_resnet(face_tensor)
+        embedding_np = embedding.cpu().numpy().flatten()
+    except Exception as e:
+        logger.error(f"Embedding extraction failed: {e}")
+        raise HTTPException(500, "Face processing failed. Ensure your face is clearly visible.")
+
+    # Validate dimension
     if embedding_np.shape[0] != 512:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Wrong embedding dimension: got {embedding_np.shape[0]}, expected 512"
-        )
- 
-    # 1. Store in DB as comma-separated string
-    user.face_embedding = ",".join(str(x) for x in embedding_np.tolist())
+        raise HTTPException(500, f"Wrong embedding dim: {embedding_np.shape[0]}")
+
+    # ── Store in DB ───────────────────────────────────────────────
+    user.face_embedding = ",".join(f"{x:.6f}" for x in embedding_np.tolist())
     db.commit()
- 
-    # 2. Register in FaceRecognizer singleton (in-memory)
+
+    # ── Register in recognizer (in-memory for fast lookup) ────────
     success = recognizer.register(
         user_id   = user.id,
         full_name = user.full_name,
         embedding = embedding_np,
     )
     if not success:
-        raise HTTPException(500, "Failed to register face in recognizer")
- 
-    logger.info(f"Face enrolled | user={user.email} | dim={embedding_np.shape[0]}")
- 
+        raise HTTPException(500, "Failed to register in face recognizer")
+
+    logger.info(f"Face enrolled (server-side) | user={user.email}")
     return EnrollFaceResponse(
-        message  = "Face enrollment successful. You can now start exams.",
+        message  = "Face enrolled successfully. You can now start exams.",
         email    = user.email,
         user_id  = user.id,
         enrolled = True,
     )
- 
  
 # ─────────────────────────────────────────────
 #  GET /enroll-status
@@ -423,9 +420,6 @@ def enroll_status(
             "No face enrolled. Run face enrollment before starting exam."
         ),
     }
- 
-
-
 # ─────────────────────────────────────────────
 #  POST /logout
 # ─────────────────────────────────────────────
