@@ -48,7 +48,7 @@ MODEL_PATH  = os.path.join(BASE_DIR, "models", "finalBestV5.pt")
 # ─────────────────────────────────────────────
 VIOLATION_WEIGHTS = {
     "cell_phone" : 40,
-    "book"       : 25,
+    "book"       : 5,
     "headphone"  : 30,
     "earbud"     : 30,
 }
@@ -174,7 +174,8 @@ class ObjectDetector:
     # ── per-class violation cooldown (seconds) ────────────────────────
     VIOLATION_COOLDOWN = {
         "cell_phone" : 5.0,
-        "book"       : 8.0,
+        # "book"       : 8.0,
+        "book" : 1.0,
         "headphone"  : 8.0,
         "earbud"     : 8.0,
     }
@@ -185,7 +186,8 @@ class ObjectDetector:
         default_conf: float = 0.50,
         person_conf:  float = 0.30,
         phone_conf:   float = 0.65,
-        book_conf:    float = 0.70,
+        # book_conf:    float = 0.70,
+        book_conf:  float=0.80,
         audio_conf:   float = 0.41,
         save_screenshots: bool  = True,
         screenshot_dir:   str   = "storage/screenshots/objects",
