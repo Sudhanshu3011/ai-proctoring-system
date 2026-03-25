@@ -124,3 +124,24 @@ class ErrorResponse(BaseModel):
     model_config = {"json_schema_extra": {
         "example": {"detail": "Invalid credentials", "code": "AUTH_FAILED"}
     }}
+
+
+class EnrollFaceRequest(BaseModel):
+    embedding_base64:  str = Field(
+        ..., description="Base64-encoded float32 FaceNet embedding from detector.py"
+    )
+    face_image_base64: str = Field(
+        ..., description="Base64-encoded JPEG face image (for admin review)"
+    )
+ 
+    model_config = {"json_schema_extra": {"example": {
+        "embedding_base64":  "base64encodedembedding==",
+        "face_image_base64": "base64encodedimage==",
+    }}}
+ 
+ 
+class EnrollFaceResponse(BaseModel):
+    message:   str
+    email:     str
+    user_id:   str
+    enrolled:  bool
