@@ -48,7 +48,7 @@ MODEL_PATH  = os.path.join(BASE_DIR, "models", "finalBestV5.pt")
 # ─────────────────────────────────────────────
 VIOLATION_WEIGHTS = {
     "cell_phone" : 40,
-    "book"       : 5,
+    "book"       : 25,
     "headphone"  : 30,
     "earbud"     : 30,
 }
@@ -174,8 +174,7 @@ class ObjectDetector:
     # ── per-class violation cooldown (seconds) ────────────────────────
     VIOLATION_COOLDOWN = {
         "cell_phone" : 5.0,
-        # "book"       : 8.0,
-        "book" : 1.0,
+        "book"       : 8.0,
         "headphone"  : 8.0,
         "earbud"     : 8.0,
     }
