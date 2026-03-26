@@ -36,13 +36,12 @@ from db.models   import User, ExamSession, SessionStatus
 from schemas.auth_schema import (
     RegisterRequest,
     RegisterResponse,
-    LoginRequest,
-    LoginResponse,
-    FaceVerifyRequest,
-    FaceVerifyResponse,
     UserProfileResponse,
     EnrollFaceRequest,
-    EnrollFaceResponse
+    EnrollFaceResponse,
+    VerifyFaceImageRequest,
+    VerifyFaceImageResponse
+    
 )
 
 logger = logging.getLogger(__name__)
@@ -120,49 +119,6 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────
 #  POST /login
 # ─────────────────────────────────────────────
-# @router.post(
-#     "/login",
-#     response_model=LoginResponse,
-#     summary="Login and receive JWT access token",
-# )
-# def login(payload: LoginRequest, db: Session = Depends(get_db)):
-#     """
-#     Validates credentials and returns a signed JWT token.
-#     The token must be sent as:
-#         Authorization: Bearer <token>
-#     on all protected routes.
-#     """
-#     user = db.query(User).filter(User.email == payload.email).first()
-
-#     # Same error for wrong email AND wrong password — prevents user enumeration
-#     if not user or not verify_password(payload.password, user.hashed_password):
-#         raise HTTPException(
-#             status_code=status.HTTP_401_UNAUTHORIZED,
-#             detail="Invalid email or password",
-#             headers={"WWW-Authenticate": "Bearer"},
-#         )
-
-#     if not user.is_active:
-#         raise HTTPException(
-#             status_code=status.HTTP_403_FORBIDDEN,
-#             detail="Account is deactivated. Contact admin.",
-#         )
-
-#     token = create_access_token({
-#         "sub":       user.email,
-#         "user_id":   user.id,
-#         "role":      user.role.value,
-#         "full_name": user.full_name,
-#     })
-
-#     logger.info(f"Login success: {user.email}")
-#     return LoginResponse(
-#         access_token = token,
-#         role         = user.role,
-#         user_id      = user.id,
-#         full_name    = user.full_name,
-#         expires_in   = settings.JWT_EXPIRE_MINUTES * 60,
-#     )
 @router.post("/login", summary="Login and receive JWT access token")
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -230,85 +186,86 @@ def get_profile(
 # ─────────────────────────────────────────────
 @router.post(
     "/verify-face",
-    response_model=FaceVerifyResponse,
-    summary="Verify candidate identity via face embedding before exam",
+    response_model=VerifyFaceImageResponse,
+    summary="Verify live face before exam starts",
 )
 def verify_face(
-    payload: FaceVerifyRequest,
-    token_data: dict  = Depends(get_current_user_payload),
-    db: Session       = Depends(get_db),
+    payload    : VerifyFaceImageRequest,
+    token_data : dict    = Depends(get_current_user_payload),
+    db         : Session = Depends(get_db),
 ):
     """
-    Called by frontend right before exam starts.
-    Compares live webcam embedding against stored registration embedding.
-
-    Flow:
-      1. Frontend sends base64-encoded FaceNet embedding
-      2. We decode it to numpy array
-      3. Compare with stored embedding using cosine similarity
-      4. If similarity >= threshold → mark session as face_verified
-      5. Return result to frontend
-
-    The exam cannot proceed unless this returns verified=True.
+    Called by FaceVerifyModal right before exam begins.
+    Receives a webcam photo, extracts embedding server-side,
+    compares with stored enrollment embedding.
     """
-    # Get current user
     user = db.query(User).filter(User.email == token_data["sub"]).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(404, "User not found")
 
-    # Check stored embedding exists
     if not user.face_embedding:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No face embedding registered. Complete registration first.",
-        )
+        raise HTTPException(400, "No face enrolled. Complete enrollment first.")
 
-    # Get exam session
     session = db.query(ExamSession).filter(
         ExamSession.id == payload.session_id,
         ExamSession.user_id == user.id,
     ).first()
     if not session:
-        raise HTTPException(status_code=404, detail="Exam session not found")
+        raise HTTPException(404, "Exam session not found")
 
-    # Decode incoming embedding
+    # Decode photo and extract live embedding
     try:
-        embedding_bytes = base64.b64decode(payload.embedding_base64)
-        live_embedding  = np.frombuffer(embedding_bytes, dtype=np.float32)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid embedding format. Expected base64 float32 bytes.",
-        )
+        img_bytes = base64.b64decode(payload.face_image_base64)
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("Could not decode image")
+        face_tensor = preprocess_face(frame)
+        with torch.no_grad():
+            live_emb = inception_resnet(face_tensor)
+        live_embedding = live_emb.cpu().numpy().flatten()
+    except Exception as e:
+        raise HTTPException(400, f"Could not process face image: {e}")
 
-    # Compare with stored embedding
-    stored_embedding = str_to_embedding(user.face_embedding)
-    similarity       = cosine_similarity(live_embedding, stored_embedding)
-    verified         = similarity >= settings.FACE_SIMILARITY_THRESHOLD
+    # Load stored embedding
+    stored_embedding = np.array(
+        [float(x) for x in user.face_embedding.split(",")],
+        dtype=np.float32,
+    )
 
-    # Update session
+    # Cosine similarity
+    def cosine_sim(a, b):
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        if na < 1e-6 or nb < 1e-6: return 0.0
+        return float(np.dot(a, b) / (na * nb))
+
+    similarity = cosine_sim(live_embedding, stored_embedding)
+    verified   = similarity >= settings.FACE_SIMILARITY_THRESHOLD
+
+    # Update session verification status
     session.face_verified     = verified
     session.face_verify_score = similarity
-    if verified:
-        session.status = SessionStatus.ACTIVE
     db.commit()
+
+    # Also start recognizer session for mid-exam re-verification
+    if verified:
+        recognizer.start_session(session.id, user.id, live_embedding)
 
     logger.info(
         f"Face verify | user={user.email} | "
-        f"score={similarity:.3f} | verified={verified}"
+        f"sim={similarity:.3f} | verified={verified}"
     )
-    return FaceVerifyResponse(
+    return VerifyFaceImageResponse(
         verified         = verified,
         similarity_score = round(similarity, 4),
         session_id       = session.id,
         message          = (
-            "Identity verified. Exam can start."
+            "Identity verified. Exam starting."
             if verified else
-            f"Identity mismatch (score={similarity:.2f}, "
-            f"threshold={settings.FACE_SIMILARITY_THRESHOLD})"
+            f"Face not matched (score={similarity:.2f}, "
+            f"required={settings.FACE_SIMILARITY_THRESHOLD})"
         ),
     )
-
 # ─────────────────────────────────────────────────────────────────
 #  POST /enroll-face
 # ─────────────────────────────────────────────────────────────────
