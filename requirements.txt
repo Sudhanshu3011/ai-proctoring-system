@@ -23,6 +23,7 @@ fonttools==4.62.1
 fsspec==2026.2.0
 greenlet==3.3.2
 h11==0.16.0
+httptools==0.7.1
 idna==3.11
 Jinja2==3.1.6
 kiwisolver==1.5.0
@@ -78,7 +79,7 @@ SQLAlchemy==2.0.48
 starlette==1.0.0
 sympy==1.14.0
 torch==2.10.0
-torchaudio==2.10.0+cpu
+torchaudio==2.10.0
 torchvision==0.25.0
 triton==3.6.0
 typing-inspection==0.4.2
@@ -87,4 +88,7 @@ ultralytics==8.4.24
 ultralytics-thop==2.0.18
 urllib3==2.6.3
 uvicorn==0.42.0
+uvloop==0.22.1
+watchfiles==1.1.1
 webrtcvad==2.0.10
+websockets==16.0
