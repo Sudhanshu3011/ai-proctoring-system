@@ -27,6 +27,7 @@ import time
 import asyncio
 import numpy as np
 import cv2
+import mediapipe as mp
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -247,7 +248,6 @@ def process_frame(
 
     # ── 1. Face detection ─────────────────────────────────────────
     rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    import mediapipe as mp
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     fd_result = face_detector.detect(mp_image)
 
@@ -453,6 +453,8 @@ def get_session_risk(
 # ─────────────────────────────────────────────
 #  WebSocket  /ws/monitor/{session_id}
 # ─────────────────────────────────────────────
+ws_router = APIRouter(tags=["WebSocket"])
+
 @ws_router.websocket("/ws/monitor/{session_id}")
 async def websocket_monitor(
     websocket  : WebSocket,
@@ -498,21 +500,72 @@ async def websocket_monitor(
                 continue
 
             # ── FRAME ────────────────────────────────────────────
+            # if msg_type == "FRAME" and scorer:
+            #     frame_b64 = msg.get("data", "")
+            #     try:
+            #         frame = _decode_frame(frame_b64)
+            #         # Run lightweight pose check (no full pipeline for WS)
+            #         pose_est = _pose_estimators.get(session_id)
+            #         if pose_est:
+            #             result    = pose_est.estimate_pose(frame)
+            #             violation = pose_est.check_violation(result)
+            #             if violation:
+            #                 ano_det.add_event(ViolationEvent(
+            #                     "LOOKING_AWAY", time.time(), 15,
+            #                     result.confidence, violation.duration_seconds,
+            #                     "pose",
+            #                 ))
+            #     except Exception as e:
+            #         logger.warning(f"WS frame processing error: {e}")
+            # Inside websocket_monitor, replace the FRAME block:
+
             if msg_type == "FRAME" and scorer:
                 frame_b64 = msg.get("data", "")
                 try:
                     frame = _decode_frame(frame_b64)
-                    # Run lightweight pose check (no full pipeline for WS)
+            
+                    # Run through all AI modules
                     pose_est = _pose_estimators.get(session_id)
+                    obj_det  = _object_detectors.get(session_id)
+                    ano_det  = _anomaly_detectors.get(session_id)
+            
+                    violations = []
+                    events     = []
+            
+                    # Face detection
+                    rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    fd_result = face_detector.detect(mp_image)
+            
+                    if not fd_result.detections:
+                        events.append(ViolationEvent("FACE_ABSENT", time.time(), 10, 1.0, 0.0, "face"))
+                        violations.append("FACE_ABSENT")
+                    elif len(fd_result.detections) > 1:
+                        events.append(ViolationEvent("MULTI_FACE", time.time(), 30, 1.0, 0.0, "face"))
+                        violations.append("MULTI_FACE")
+            
+                    # Head pose
                     if pose_est:
                         result    = pose_est.estimate_pose(frame)
                         violation = pose_est.check_violation(result)
                         if violation:
-                            ano_det.add_event(ViolationEvent(
-                                "LOOKING_AWAY", time.time(), 15,
-                                result.confidence, violation.duration_seconds,
-                                "pose",
-                            ))
+                            events.append(ViolationEvent("LOOKING_AWAY", time.time(), 15,
+                                result.confidence, violation.duration_seconds, "pose"))
+                            violations.append("LOOKING_AWAY")
+            
+                    # Object detection (every 3rd frame to save CPU)
+                    if obj_det and (int(time.time() * 10) % 3 == 0):
+                        detections = obj_det.detect(frame)
+                        obj_events = obj_det.check_violations(detections, frame)
+                        for e in obj_events:
+                            vtype = e.cls.upper() + "_DETECTED"
+                            events.append(ViolationEvent(vtype, time.time(), e.weight,
+                                e.confidence, 0.0, "object"))
+                            violations.append(vtype)
+            
+                    if events and ano_det:
+                        ano_det.add_events(events)
+            
                 except Exception as e:
                     logger.warning(f"WS frame processing error: {e}")
 
