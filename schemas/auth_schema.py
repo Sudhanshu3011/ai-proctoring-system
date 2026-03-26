@@ -138,3 +138,18 @@ class ErrorResponse(BaseModel):
     model_config = {"json_schema_extra": {
         "example": {"detail": "Invalid credentials", "code": "AUTH_FAILED"}
     }}
+
+# ─────────────────────────────────────────────
+#  Face verification
+# ─────────────────────────────────────────────
+
+class VerifyFaceImageRequest(BaseModel):
+    session_id:        str
+    face_image_base64: str   # base64 JPEG from browser webcam
+
+
+class VerifyFaceImageResponse(BaseModel):
+    verified:         bool
+    similarity_score: float
+    session_id:       str
+    message:          str
