@@ -16,25 +16,43 @@ export default function LoginPage() {
 
   const handleLogin = async () => {
     setError(''); setLoad(true);
+    console.log("LOGIN PAYLOAD:", {
+    email: form.email,
+    password: form.password
+  });
+
     try {
       const data = await login(form.email, form.password);
+      console.log("LOGIN RESPONSE:", data);
       navigate(data.role === 'admin' ? '/admin' : '/dashboard');
     } catch (e) {
+      console.log("LOGIN ERROR:", e.response || e);
       setError(e.response?.data?.detail || 'Login failed');
     } finally { setLoad(false); }
   };
 
   const handleRegister = async () => {
-    setError(''); setLoad(true);
-    try {
-      await authAPI.register(form);
-      setTab('login');
-      setError('');
-      setForm(p => ({ ...p, full_name: '' }));
-    } catch (e) {
-      setError(e.response?.data?.detail || 'Registration failed');
-    } finally { setLoad(false); }
-  };
+  setError(''); setLoad(true);
+  try {
+    await authAPI.register({
+      email:     form.email,
+      full_name: form.full_name,   // ← must be full_name not fullName
+      password:  form.password,
+      role:      form.role,        // ← must be "student" or "admin"
+    });
+    setTab('login');
+    setError('');
+  } catch (e) {
+    // Show the actual validation error from backend
+    const detail = e.response?.data?.detail;
+    const errors = e.response?.data?.errors;
+    if (errors) {
+      setError(errors.map(err => `${err.field}: ${err.message}`).join(' | '));
+    } else {
+      setError(detail || 'Registration failed');
+    }
+  } finally { setLoad(false); }
+};
 
   return (
     <div style={{
