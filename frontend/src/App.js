@@ -1,4 +1,4 @@
-// src/App.js  — COMPLETE with /report route added
+// src/App.js — FINAL with /report route
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -12,16 +12,12 @@ import './index.css';
 
 function Loader() {
   return (
-    <div style={{
-      minHeight:'100vh', display:'flex', alignItems:'center',
-      justifyContent:'center', background:'var(--bg)',
-    }}>
-      <div style={{
-        width:40, height:40, border:'3px solid var(--border)',
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center',
+      justifyContent:'center', background:'var(--bg)' }}>
+      <div style={{ width:40, height:40, border:'3px solid var(--border)',
         borderTopColor:'var(--accent)', borderRadius:'50%',
-        animation:'spin 0.8s linear infinite',
-      }}/>
-      <style>{`@keyframes spin { to { transform:rotate(360deg) } }`}</style>
+        animation:'spin 0.8s linear infinite' }}/>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 }
@@ -44,7 +40,6 @@ function AdminRoute({ children }) {
 function AppRoutes() {
   const { user, loading } = useAuth();
   if (loading) return <Loader />;
-
   return (
     <Routes>
       <Route path="/login" element={
@@ -52,33 +47,13 @@ function AppRoutes() {
           ? <Navigate to={user.role === 'admin' ? '/admin' : '/dashboard'} />
           : <LoginPage />
       }/>
-
-      <Route path="/dashboard" element={
-        <StudentRoute><DashboardPage /></StudentRoute>
-      }/>
-
-      <Route path="/enroll" element={
-        <StudentRoute><EnrollPage /></StudentRoute>
-      }/>
-
-      <Route path="/exam/:id" element={
-        <StudentRoute><ExamPage /></StudentRoute>
-      }/>
-
-      {/* Report page — accessible by student and admin */}
-      <Route path="/report" element={
-        <StudentRoute><ReportPage /></StudentRoute>
-      }/>
-
-      <Route path="/admin" element={
-        <AdminRoute><AdminPage /></AdminRoute>
-      }/>
-
+      <Route path="/dashboard" element={<StudentRoute><DashboardPage /></StudentRoute>}/>
+      <Route path="/enroll"    element={<StudentRoute><EnrollPage /></StudentRoute>}/>
+      <Route path="/exam/:id"  element={<StudentRoute><ExamPage /></StudentRoute>}/>
+      <Route path="/report"    element={<StudentRoute><ReportPage /></StudentRoute>}/>
+      <Route path="/admin"     element={<AdminRoute><AdminPage /></AdminRoute>}/>
       <Route path="*" element={
-        <Navigate to={user
-          ? (user.role === 'admin' ? '/admin' : '/dashboard')
-          : '/login'}
-        />
+        <Navigate to={user ? (user.role==='admin' ? '/admin' : '/dashboard') : '/login'}/>
       }/>
     </Routes>
   );
