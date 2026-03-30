@@ -158,32 +158,6 @@ def generate_report(
 # ─────────────────────────────────────────────
 #  GET /reports/{session_id}/download
 # ─────────────────────────────────────────────
-# @router.get(
-#     "/{session_id}/download",
-#     summary="Download PDF report",
-# )
-# def download_report(
-#     session_id : str,
-#     token_data : dict    = Depends(get_current_user_payload),
-#     db         : Session = Depends(get_db),
-# ):
-#     pdf_path = os.path.join(REPORTS_DIR, f"{session_id}.pdf")
-
-#     # Auto-generate if not exists
-#     if not os.path.exists(pdf_path):
-#         data = _build_session_data(session_id, db)
-#         report_service.generate(data)
-
-#     if not os.path.exists(pdf_path):
-#         raise HTTPException(404, "Report could not be generated")
-
-#     return FileResponse(
-#         path         = pdf_path,
-#         media_type   = "application/pdf",
-#         filename     = f"proctor_report_{session_id[:8]}.pdf",
-#     )
-
-
 @router.get("/{session_id}/download", summary="Download PDF report")
 def download_report(
     session_id : str,

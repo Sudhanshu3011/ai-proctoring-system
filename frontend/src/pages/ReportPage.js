@@ -31,34 +31,6 @@ export default function ReportPage() {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
-  // const handleDownload = async () => {
-  //   setDlLoad(true);
-  //   try {
-  //     // Generate first, then download
-  //     const token = localStorage.getItem('token');
-  //     await fetch(`/api/v1/reports/generate/${sessionId}`, {
-  //       method: 'POST',
-  //       headers: { Authorization: `Bearer ${token}` },
-  //     });
-  //     // Trigger download via link
-  //     const link = document.createElement('a');
-  //     link.href  = `/api/v1/reports/${sessionId}/download`;
-  //     link.setAttribute('download', `report_${sessionId.slice(0,8)}.pdf`);
-  //     // Append auth via fetch + blob (handles auth header)
-  //     const res  = await fetch(link.href, {
-  //       headers: { Authorization: `Bearer ${token}` },
-  //     });
-  //     const blob = await res.blob();
-  //     const url  = URL.createObjectURL(blob);
-  //     link.href  = url;
-  //     document.body.appendChild(link);
-  //     link.click();
-  //     document.body.removeChild(link);
-  //     URL.revokeObjectURL(url);
-  //   } catch { alert('PDF generation failed. Try again.'); }
-  //   finally  { setDlLoad(false); }
-  // };
-
   const handleDownload = async () => {
     setDlLoad(true);
     try {
