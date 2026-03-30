@@ -68,4 +68,12 @@ export const reportAPI = {
   download: (sid) => `${BASE}/reports/${sid}/download`,
 };
 
+// ── Admin ───────────────────────────────────────────────────────
+export const adminAPI = {
+  dashboard:     ()    => api.get('/admin/dashboard'),
+  liveSessions:  ()    => api.get('/admin/live-sessions'),
+  sessionDetail: (id)  => api.get(`/admin/session/${id}`),
+  terminate:     (id)  => api.post(`/admin/terminate/${id}`),
+};
+
 export default api;
