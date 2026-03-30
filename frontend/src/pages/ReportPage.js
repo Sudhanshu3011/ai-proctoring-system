@@ -31,32 +31,71 @@ export default function ReportPage() {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
+  // const handleDownload = async () => {
+  //   setDlLoad(true);
+  //   try {
+  //     // Generate first, then download
+  //     const token = localStorage.getItem('token');
+  //     await fetch(`/api/v1/reports/generate/${sessionId}`, {
+  //       method: 'POST',
+  //       headers: { Authorization: `Bearer ${token}` },
+  //     });
+  //     // Trigger download via link
+  //     const link = document.createElement('a');
+  //     link.href  = `/api/v1/reports/${sessionId}/download`;
+  //     link.setAttribute('download', `report_${sessionId.slice(0,8)}.pdf`);
+  //     // Append auth via fetch + blob (handles auth header)
+  //     const res  = await fetch(link.href, {
+  //       headers: { Authorization: `Bearer ${token}` },
+  //     });
+  //     const blob = await res.blob();
+  //     const url  = URL.createObjectURL(blob);
+  //     link.href  = url;
+  //     document.body.appendChild(link);
+  //     link.click();
+  //     document.body.removeChild(link);
+  //     URL.revokeObjectURL(url);
+  //   } catch { alert('PDF generation failed. Try again.'); }
+  //   finally  { setDlLoad(false); }
+  // };
+
   const handleDownload = async () => {
     setDlLoad(true);
     try {
-      // Generate first, then download
       const token = localStorage.getItem('token');
+
+      // Step 1: Generate (safe to call even if already exists)
       await fetch(`/api/v1/reports/generate/${sessionId}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { 'Authorization': `Bearer ${token}` },
       });
-      // Trigger download via link
-      const link = document.createElement('a');
-      link.href  = `/api/v1/reports/${sessionId}/download`;
-      link.setAttribute('download', `report_${sessionId.slice(0,8)}.pdf`);
-      // Append auth via fetch + blob (handles auth header)
-      const res  = await fetch(link.href, {
-        headers: { Authorization: `Bearer ${token}` },
+
+      // Step 2: Fetch PDF as blob with auth header
+      const response = await fetch(`/api/v1/reports/${sessionId}/download`, {
+        headers: { 'Authorization': `Bearer ${token}` },
       });
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      link.href  = url;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch { alert('PDF generation failed. Try again.'); }
-    finally  { setDlLoad(false); }
+
+      if (!response.ok) {
+        throw new Error(`Server returned ${response.status}`);
+      }
+
+      // Step 3: Force browser download
+      const blob = await response.blob();
+      const url  = window.URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.style.display = 'none';
+      a.href          = url;
+      a.download      = `ProctorAI_Report_${sessionId.slice(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+    } catch (e) {
+      alert(`PDF download failed: ${e.message}. Check if the exam session was completed.`);
+    } finally {
+      setDlLoad(false);
+    }
   };
 
   if (loading) return (
