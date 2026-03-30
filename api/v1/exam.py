@@ -1,70 +1,48 @@
 """
-api/v1/exam.py
+api/v1/exam.py  — FINAL (uses state.py, no circular import)
 
-Exam Management Endpoints
-
-  POST /api/v1/exams/create              → admin creates exam
-  GET  /api/v1/exams/                    → list all exams
-  GET  /api/v1/exams/{exam_id}           → get exam details
-  POST /api/v1/exams/{exam_id}/start     → candidate starts exam
-  POST /api/v1/exams/{exam_id}/submit    → candidate submits exam
-  POST /api/v1/exams/{exam_id}/terminate → force-terminate (admin/risk engine)
-
-Flow:
-    Admin creates exam
-        ↓
-    Candidate calls /start
-        → face verification check
-        → creates ExamSession
-        → starts RiskScore record
-        → locks identity in recognizer
-        → starts video_worker background thread
-        ↓
-    Candidate calls /submit or risk engine calls /terminate
-        → stops video_worker
-        → finalises RiskScore
-        → triggers report generation
+Exam Management Endpoints:
+  POST /api/v1/exams/create
+  GET  /api/v1/exams/
+  GET  /api/v1/exams/{exam_id}
+  POST /api/v1/exams/{exam_id}/start
+  POST /api/v1/exams/{exam_id}/submit
+  POST /api/v1/exams/{exam_id}/terminate
 """
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi  import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing   import Optional
 
 from core.security import get_current_user_payload, require_role
-from db.session    import get_db
+from db.session    import get_db, SessionLocal
 from db.models     import (
-    User, Exam, ExamSession, RiskScore,
-    ExamStatus, SessionStatus, RiskLevel, UserRole
+    User, Exam, ExamSession, RiskScore, Violation,
+    ExamStatus, SessionStatus, RiskLevel, UserRole,
 )
-from ai_engine.face_module.recognizer  import recognizer
-from ai_engine.risk_engine.scoring     import RiskScorer
-from workers.video_worker              import VideoWorker
+
+# ── Shared state (no circular import) ────────────────────────────
+from api.v1.state import _active_scorers, _active_workers
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/exams", tags=["Exam Management"])
-
-# Module-level store of active scorers and workers per session
-# In production: move to Redis for multi-instance deployments
-_active_scorers : dict[str, RiskScorer]  = {}
-_active_workers : dict[str, VideoWorker] = {}
 
 
 # ─────────────────────────────────────────────
 #  Schemas
 # ─────────────────────────────────────────────
 class ExamCreateRequest(BaseModel):
-    title:                   str = Field(..., min_length=3, max_length=200)
-    description:             Optional[str] = None
-    duration_minutes:        int = Field(60, ge=5, le=300)
-    risk_terminate_threshold: Optional[int] = Field(None, ge=50, le=100)
+    title:                    str            = Field(..., min_length=3, max_length=200)
+    description:              Optional[str]  = None
+    duration_minutes:         int            = Field(60, ge=5, le=300)
+    risk_terminate_threshold: Optional[int]  = Field(None, ge=50, le=100)
 
     model_config = {"json_schema_extra": {"example": {
         "title": "Python Midterm Exam",
         "duration_minutes": 90,
-        "risk_terminate_threshold": 85,
     }}}
 
 
@@ -78,18 +56,18 @@ class ExamResponse(BaseModel):
 
 
 class StartExamResponse(BaseModel):
-    session_id:    str
-    exam_id:       str
-    message:       str
-    started_at:    str
+    session_id:  str
+    exam_id:     str
+    message:     str
+    started_at:  str
 
 
 class SubmitExamResponse(BaseModel):
-    session_id:    str
-    message:       str
-    final_score:   float
-    risk_level:    str
-    submitted_at:  str
+    session_id:   str
+    message:      str
+    final_score:  float
+    risk_level:   str
+    submitted_at: str
 
 
 # ─────────────────────────────────────────────
@@ -182,54 +160,39 @@ def get_exam(
 @router.post(
     "/{exam_id}/start",
     response_model=StartExamResponse,
-    summary="Start exam — verifies face then begins monitoring",
+    summary="Start exam — creates session and launches monitoring",
 )
 def start_exam(
-    exam_id            : str,
-    background_tasks   : BackgroundTasks,
-    token_data         : dict    = Depends(get_current_user_payload),
-    db                 : Session = Depends(get_db),
+    exam_id          : str,
+    background_tasks : BackgroundTasks,
+    token_data       : dict    = Depends(get_current_user_payload),
+    db               : Session = Depends(get_db),
 ):
-    """
-    Called by candidate when they click "Start Exam".
-
-    Checks:
-      1. Exam exists and is schedulable
-      2. Candidate is registered and face-verified
-      3. No active session already exists for this candidate
-
-    On success:
-      - Creates ExamSession + RiskScore records
-      - Starts VideoWorker background thread
-      - Locks candidate identity in recognizer
-    """
-    # Get user
     user = db.query(User).filter(User.email == token_data["sub"]).first()
     if not user:
         raise HTTPException(404, "User not found")
 
-    # Get exam
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(404, "Exam not found")
     if exam.status == ExamStatus.TERMINATED:
         raise HTTPException(400, "Exam is no longer available")
 
-    # Check face registered
-    if not recognizer.is_registered(user.id):
+    # Check face enrolled
+    if not user.face_embedding:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Face not registered. Complete registration before starting exam."
+            "Face not enrolled. Complete face enrollment before starting exam."
         )
 
-    # Check no duplicate active session
+    # No duplicate active session
     existing = db.query(ExamSession).filter(
         ExamSession.user_id == user.id,
         ExamSession.exam_id == exam_id,
         ExamSession.status  == SessionStatus.ACTIVE,
     ).first()
     if existing:
-        raise HTTPException(409, "Active session already exists for this exam")
+        raise HTTPException(409, "You already have an active session for this exam")
 
     # Create session
     now     = datetime.now(timezone.utc)
@@ -241,9 +204,9 @@ def start_exam(
         face_verified = False,
     )
     db.add(session)
-    db.flush()   # get session.id before committing
+    db.flush()
 
-    # Create RiskScore record
+    # Create RiskScore row
     risk_record = RiskScore(
         session_id    = session.id,
         current_score = 0.0,
@@ -253,16 +216,19 @@ def start_exam(
     db.commit()
     db.refresh(session)
 
-    # Start RiskScorer
+    # Create RiskScorer
+    from ai_engine.risk_engine.scoring import RiskScorer
     scorer = RiskScorer(session_id=session.id)
     _active_scorers[session.id] = scorer
 
-    # Start VideoWorker in background
-    worker = VideoWorker(
+    # Create VideoWorker with its OWN session (not the request-scoped one)
+    from workers.video_worker import VideoWorker
+    worker_db = SessionLocal()          # independent session — lives with worker
+    worker    = VideoWorker(
         session_id = session.id,
         user_id    = user.id,
         scorer     = scorer,
-        db_session = db,
+        db_session = worker_db,
     )
     _active_workers[session.id] = worker
     background_tasks.add_task(worker.start)
@@ -332,48 +298,61 @@ def terminate_exam(
 
 
 # ─────────────────────────────────────────────
-#  Internal: close a session
+#  Internal: close session
 # ─────────────────────────────────────────────
-def _close_session(session: ExamSession, reason: str, db: Session) -> dict:
-    """Stop worker, finalise score, update DB."""
+def _close_session(
+    session : ExamSession,
+    reason  : str,
+    db      : Session,
+) -> SubmitExamResponse:
+    """
+    Shared by submit, terminate, admin terminate, and auto-terminate.
+    Stops the worker, finalises the score, generates the report.
+    """
     now = datetime.now(timezone.utc)
 
-    # Stop VideoWorker
+    # Stop VideoWorker (also closes its own DB session)
     worker = _active_workers.pop(session.id, None)
     if worker:
         worker.stop()
 
-    # Get final score
-    scorer       = _active_scorers.pop(session.id, None)
-    final_score  = scorer.current_score()    if scorer else 0.0
-    final_level  = scorer.current_level()    if scorer else "SAFE"
+    # Final score
+    scorer      = _active_scorers.pop(session.id, None)
+    final_score = scorer.current_score() if scorer else 0.0
+    final_level = scorer.current_level() if scorer else "SAFE"
 
-    # Close recognizer session
-    recognizer.end_session(session.id)
+    # Close face recognizer session
+    try:
+        from ai_engine.face_module.recognizer import recognizer
+        recognizer.end_session(session.id)
+    except Exception as e:
+        logger.debug(f"Recognizer end_session: {e}")
 
-    # Update DB
+    # Update session in DB
     session.status       = (
-        SessionStatus.COMPLETED if reason == "COMPLETED"
+        SessionStatus.COMPLETED
+        if reason == "COMPLETED"
         else SessionStatus.TERMINATED
     )
     session.submitted_at = now
 
-    risk_record = db.query(RiskScore).filter(
+    # Update RiskScore
+    risk = db.query(RiskScore).filter(
         RiskScore.session_id == session.id
     ).first()
-    if risk_record:
-        risk_record.current_score = final_score
-        risk_record.risk_level    = RiskLevel(final_level)
+    if risk:
+        risk.current_score = final_score
+        risk.risk_level    = RiskLevel(final_level)
 
     db.commit()
 
+    # Auto-generate report (non-blocking — failure doesn't break submit)
     try:
         from services.report_services import report_service
-        from api.v1.reports import _build_session_data
-
+        from api.v1.reports          import _build_session_data
         session_data = _build_session_data(session.id, db)
         report_service.generate(session_data)
-        logger.info(f"Report auto-generated | session={session.id}")
+        logger.info(f"Report generated | session={session.id}")
     except Exception as e:
         logger.error(f"Report generation failed (non-critical): {e}")
 
