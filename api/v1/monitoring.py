@@ -500,25 +500,6 @@ async def websocket_monitor(
                 continue
 
             # ── FRAME ────────────────────────────────────────────
-            # if msg_type == "FRAME" and scorer:
-            #     frame_b64 = msg.get("data", "")
-            #     try:
-            #         frame = _decode_frame(frame_b64)
-            #         # Run lightweight pose check (no full pipeline for WS)
-            #         pose_est = _pose_estimators.get(session_id)
-            #         if pose_est:
-            #             result    = pose_est.estimate_pose(frame)
-            #             violation = pose_est.check_violation(result)
-            #             if violation:
-            #                 ano_det.add_event(ViolationEvent(
-            #                     "LOOKING_AWAY", time.time(), 15,
-            #                     result.confidence, violation.duration_seconds,
-            #                     "pose",
-            #                 ))
-            #     except Exception as e:
-            #         logger.warning(f"WS frame processing error: {e}")
-            # Inside websocket_monitor, replace the FRAME block:
-
             if msg_type == "FRAME" and scorer:
                 frame_b64 = msg.get("data", "")
                 try:

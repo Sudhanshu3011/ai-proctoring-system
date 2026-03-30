@@ -367,6 +367,16 @@ def _close_session(session: ExamSession, reason: str, db: Session) -> dict:
 
     db.commit()
 
+    try:
+        from services.report_services import report_service
+        from api.v1.reports import _build_session_data
+
+        session_data = _build_session_data(session.id, db)
+        report_service.generate(session_data)
+        logger.info(f"Report auto-generated | session={session.id}")
+    except Exception as e:
+        logger.error(f"Report generation failed (non-critical): {e}")
+
     logger.info(
         f"Session {reason} | id={session.id} | "
         f"score={final_score} level={final_level}"
