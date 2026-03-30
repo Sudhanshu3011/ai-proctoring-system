@@ -173,28 +173,6 @@ class VideoWorker:
     # ─────────────────────────────────────────
     #  Main loop
     # ─────────────────────────────────────────
-    
-    # def _run(self):
-    #     """
-    #     Daemon thread entry point.
-    #     Opens camera → frame loop → cleanup.
-    #     """
-    #     cap = cv2.VideoCapture(0)
-    #     if not cap.isOpened():
-    #         logger.error(
-    #             f"Cannot open camera | session={self.session_id}"
-    #         )
-    #         self._running = False
-    #         return
-
-    #     # Set camera to target FPS
-    #     cap.set(cv2.CAP_PROP_FPS, self.config.TARGET_FPS)
-    #     frame_interval = 1.0 / self.config.TARGET_FPS
-
-    #     logger.info(
-    #         f"Camera opened | session={self.session_id} | "
-    #         f"target={self.config.TARGET_FPS}fps"
-    #     )
     def _run(self):
         """
         FIXED: No camera opened here.
@@ -216,50 +194,6 @@ class VideoWorker:
             time.sleep(1.0)
 
         logger.info(f"VideoWorker stopped | session={self.session_id}")
-        # try:
-        #     while self._running and not self._stop_event.is_set():
-        #         loop_start = time.time()
-
-        #         ret, frame = cap.read()
-        #         if not ret:
-        #             logger.warning("Failed to grab frame — retrying")
-        #             time.sleep(0.1)
-        #             continue
-
-        #         self._frame_count += 1
-        #         violations = self._process_frame(frame)
-
-        #         # ── Periodic re-verification ─────────────────────
-        #         now = time.time()
-        #         if (now - self._last_reverify_time
-        #                 >= self.config.REVERIFY_INTERVAL_SEC):
-        #             self._do_reverification(frame)
-        #             self._last_reverify_time = now
-
-        #         # ── Periodic DB sync ─────────────────────────────
-        #         if (now - self._last_db_sync_time
-        #                 >= self.config.DB_SYNC_INTERVAL_SEC):
-        #             self._sync_to_db()
-        #             self._last_db_sync_time = now
-
-        #         # ── Maintain target FPS ───────────────────────────
-        #         elapsed = time.time() - loop_start
-        #         sleep   = frame_interval - elapsed
-        #         if sleep > 0:
-        #             time.sleep(sleep)
-
-        # except Exception as e:
-        #     logger.error(
-        #         f"VideoWorker error | session={self.session_id} | "
-        #         f"{e}", exc_info=True
-        #     )
-        # finally:
-        #     cap.release()
-        #     logger.info(
-        #         f"Camera released | session={self.session_id} | "
-        #         f"frames={self._frame_count}"
-        #     )
-
     # ─────────────────────────────────────────
     #  Frame processing pipeline
     # ─────────────────────────────────────────
