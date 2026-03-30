@@ -30,6 +30,7 @@ from core.logging_config import setup_logging
 from db.session          import init_db, close_db
 from api.v1.auth         import router as auth_router
 from api.v1.monitoring import router as monitoring_router, ws_router
+from api.v1.admin import router as admin_router, admin_ws_router
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +138,11 @@ from api.v1.exam       import router as exam_router
 from api.v1.monitoring import router as monitoring_router
 # from api.v1.violations import router as violations_router
 # from api.v1.reports    import router as reports_router
-# from api.v1.admin      import router as admin_router
+from api.v1.admin      import router as admin_router
 app.include_router(exam_router,       prefix=API_PREFIX)
 app.include_router(monitoring_router, prefix=API_PREFIX)
 app.include_router(ws_router)                              # NO prefix — WS is at /ws/monitor/{id}
+app.include_router(admin_ws_router)  # no prefix — WS at /ws/admin/live
 # app.include_router(violations_router, prefix=API_PREFIX)
 # app.include_router(reports_router,    prefix=API_PREFIX)
 # app.include_router(admin_router,      prefix=API_PREFIX)
