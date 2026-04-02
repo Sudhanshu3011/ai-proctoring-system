@@ -323,9 +323,11 @@ class TestAuthAPI:
 
     @pytest.mark.api
     def test_health(self, client):
-        r = client.get("/health".replace("/api/v1", ""))
+        import httpx
+        r = httpx.get("http://localhost:8000/health", timeout=10)
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
+        assert r.json()["app"]    == "AI Proctoring System"
 
     @pytest.mark.api
     def test_register_duplicate_fails(self, client):
