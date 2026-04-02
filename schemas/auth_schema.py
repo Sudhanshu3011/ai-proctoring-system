@@ -76,46 +76,6 @@ class LoginResponse(BaseModel):
     full_name:    str
     expires_in:   int   # seconds
 
-# ----------------------------------------------
-#   Enroll user (face embedding)
-# ----------------------------------------------
-
-class EnrollFaceRequest(BaseModel):
-    face_image_base64: str = Field(
-        ..., description="Base64 JPEG from webcam (browser captures this)"
-    )
-
-class EnrollFaceResponse(BaseModel):
-    message:  str
-    email:    str
-    user_id:  str
-    enrolled: bool
-
-# ─────────────────────────────────────────────
-#  Face verification
-# ─────────────────────────────────────────────
-class FaceVerifyRequest(BaseModel):
-    session_id:      str
-    embedding_base64: str = Field(
-        ...,
-        description="Base64-encoded FaceNet embedding bytes"
-    )
-
-    model_config = {"json_schema_extra": {
-        "example": {
-            "session_id":       "uuid-here",
-            "embedding_base64": "base64encodedembedding=="
-        }
-    }}
-
-
-class FaceVerifyResponse(BaseModel):
-    verified:         bool
-    similarity_score: float   # 0.0–1.0 cosine similarity
-    session_id:       str
-    message:          str
-
-
 # ─────────────────────────────────────────────
 #  Current user (returned by /profile)
 # ─────────────────────────────────────────────
@@ -139,17 +99,58 @@ class ErrorResponse(BaseModel):
         "example": {"detail": "Invalid credentials", "code": "AUTH_FAILED"}
     }}
 
+# ----------------------------------------------
+#   Enroll user (face embedding)
+# ----------------------------------------------
+
+class EnrollFaceRequest(BaseModel):
+    """
+    Updated: accepts a sequence of frames instead of one photo.
+    Frontend captures ~3 seconds of video (15-25 frames at 8 FPS).
+    """
+    frame_sequence: list[str] = Field(
+        ...,
+        min_length=8,
+        description="List of base64-encoded JPEG frames captured over ~3 seconds",
+    )
+    fps: float = Field(
+        default=8.0,
+        ge=1.0,
+        le=30.0,
+        description="Frames per second the sequence was captured at",
+    )
+ 
+    model_config = {"json_schema_extra": {"example": {
+        "frame_sequence": ["base64frame1...", "base64frame2..."],
+        "fps": 8.0,
+    }}}
+ 
+
+class EnrollFaceResponse(BaseModel):
+    message:          str
+    email:            str
+    user_id:          str
+    enrolled:         bool
+    liveness_signals: int    # 0-3: how many liveness signals passed
+
 # ─────────────────────────────────────────────
 #  Face verification
 # ─────────────────────────────────────────────
 
-class VerifyFaceImageRequest(BaseModel):
-    session_id:        str
-    face_image_base64: str   # base64 JPEG from browser webcam
-
-
+class VerifyFaceRequest(BaseModel):
+    """Updated: accepts frame sequence for liveness check."""
+    session_id:     str
+    frame_sequence: list[str] = Field(
+        ...,
+        min_length=8,
+        description="Base64-encoded JPEG frames captured over ~3 seconds",
+    )
+    fps: float = Field(default=8.0, ge=1.0, le=30.0)
+ 
+ 
 class VerifyFaceImageResponse(BaseModel):
-    verified:         bool
-    similarity_score: float
-    session_id:       str
-    message:          str
+    verified:          bool
+    similarity_score:  float
+    session_id:        str
+    message:           str
+    liveness_signals:  int
