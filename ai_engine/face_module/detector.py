@@ -89,12 +89,16 @@ _blink_state = {
     "confirmed":     False,
     "close_time":    None,
 }
+_movement_buffer = []
 
-BLINK_CLOSE_THRESHOLD = 0.35    # score above this = eye closing
-BLINK_OPEN_THRESHOLD  = 0.15    # score below this = eye fully open again
+# BLINK_CLOSE_THRESHOLD = 0.35    # score above this = eye closing
+BLINK_CLOSE_THRESHOLD = 0.40   # score above this = eye closing
+# BLINK_OPEN_THRESHOLD  = 0.15    # score below this = eye fully open again
+BLINK_OPEN_THRESHOLD  = 0.12    # score below this = eye fully open again
 BLINK_MAX_DURATION    = 0.4     # seconds — blink must complete within this
 BLINK_SCORE_THRESHOLD  = 0.35    # blendshape score above this = eye closed
-HEAD_MOVE_MIN_PIXELS   = 4       # pixels of nose movement = head moved
+# HEAD_MOVE_MIN_PIXELS   = 4       # pixels of nose movement = head moved
+HEAD_MOVE_MIN_PIXELS = 8  # was 4 — increased to reduce false negatives for small head movements
 LIVENESS_TIMEOUT_SEC   = 5       # seconds without confirmed liveness → log error
 
 
@@ -197,10 +201,32 @@ def check_liveness(
     cx        = int(nose.x * w)
     cy        = int(nose.y * h)
 
-    moved = True
+    # moved = True
+
+    global _movement_buffer
+
+    # Default: assume no movement
+    movement_detected = False
+
     if prev_center is not None:
-        dist  = np.sqrt((cx - prev_center[0]) ** 2 + (cy - prev_center[1]) ** 2)
-        moved = dist > HEAD_MOVE_MIN_PIXELS
+        dist = np.sqrt((cx - prev_center[0]) ** 2 + (cy - prev_center[1]) ** 2)
+        movement_detected = dist > HEAD_MOVE_MIN_PIXELS
+    else:
+        dist = 0  # first frame, no movement possible
+
+    # Add to buffer
+    _movement_buffer.append(movement_detected)
+
+    # Keep only last 5 frames
+    if len(_movement_buffer) > 5:
+        _movement_buffer.pop(0)
+
+    # Require movement in at least 3 of last 5 frames
+    moved = sum(_movement_buffer) >= 3
+
+    # if prev_center is not None:
+    #     dist  = np.sqrt((cx - prev_center[0]) ** 2 + (cy - prev_center[1]) ** 2)
+    #     moved = dist > HEAD_MOVE_MIN_PIXELS
 
     # ── Signal 2: Full blink cycle detection (OPEN → CLOSED → OPEN) ──
     # A single frame with eyes slightly closed is NOT a blink.
@@ -242,6 +268,11 @@ def check_liveness(
             logger.info(f"BLINK CONFIRMED (duration={elapsed:.2f}s)")
 
     blinked = _blink_state["confirmed"]
+    # Reset confirmed blink after 1 second to allow for next detection — prevents multiple frames being marked as live from a single blink
+    if _blink_state["confirmed"]:
+        if time.time() - _blink_state["close_time"] > 1.0:
+            _blink_state["confirmed"] = False
+
     is_live = moved and blinked
 
     logger.debug(
@@ -273,6 +304,10 @@ def faceDetection() -> dict | None:
         Camera is opened and released INSIDE this function.
         Never at module level — safe to call multiple times.
     """
+    # Some tesing is done below to verify that the models are loaded and working, but the actual camera capture and processing is done in this function.
+    _blink_state["confirmed"] = False
+    _blink_state["phase"] = "OPEN"
+    _blink_state["close_time"] = None
     # ── Open camera inside the function ──────────────────────────
     # This is intentional — opening at module level keeps the camera
     # locked even when the function is not running.
@@ -280,7 +315,10 @@ def faceDetection() -> dict | None:
     if not cap.isOpened():
         logger.error("Cannot open webcam.")
         return None
+    # Initialize movement buffer for head movement detection
+    global _movement_buffer
 
+    _movement_buffer.clear()
     logger.info("Camera opened. Waiting for live face...")
 
     liveness_start = time.time()
