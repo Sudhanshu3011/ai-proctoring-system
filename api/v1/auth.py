@@ -12,7 +12,7 @@ Authentication endpoints:
 All routes are versioned under /api/v1/auth via the router prefix
 set in main.py.
 """
-
+import json
 import cv2
 import torch
 import logging
@@ -24,6 +24,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from ai_engine.face_module.recognizer import recognizer
 from ai_engine.face_module.detector import preprocess_face, inception_resnet
+from ai_engine.face_module.liveliness import get_liveness_checker , LivenessResult
 from core.config import settings
 from core.security import (
     hash_password,
@@ -39,7 +40,7 @@ from schemas.auth_schema import (
     UserProfileResponse,
     EnrollFaceRequest,
     EnrollFaceResponse,
-    VerifyFaceImageRequest,
+    VerifyFaceRequest,
     VerifyFaceImageResponse
     
 )
@@ -73,6 +74,21 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
 
+def _decode_frame_sequence(frame_sequence: list[str]) -> list:
+    """Decode list of base64 JPEG strings to BGR numpy arrays."""
+    frames = []
+    for i, b64 in enumerate(frame_sequence):
+        try:
+            img_bytes = base64.b64decode(b64)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frames.append(frame)
+        except Exception as e:
+            logger.debug(f"Frame {i} decode error: {e}")
+    return frames
+ 
+ 
 
 # ─────────────────────────────────────────────
 #  POST /register
@@ -180,99 +196,13 @@ def get_profile(
         has_face_embedding = user.face_embedding is not None,
     )
 
-
 # ─────────────────────────────────────────────
-#  POST /verify-face
+#  FIXED: POST /enroll-face  (multi-frame liveness)
 # ─────────────────────────────────────────────
-@router.post(
-    "/verify-face",
-    response_model=VerifyFaceImageResponse,
-    summary="Verify live face before exam starts",
-)
-def verify_face(
-    payload    : VerifyFaceImageRequest,
-    token_data : dict    = Depends(get_current_user_payload),
-    db         : Session = Depends(get_db),
-):
-    """
-    Called by FaceVerifyModal right before exam begins.
-    Receives a webcam photo, extracts embedding server-side,
-    compares with stored enrollment embedding.
-    """
-    user = db.query(User).filter(User.email == token_data["sub"]).first()
-    if not user:
-        raise HTTPException(404, "User not found")
-
-    if not user.face_embedding:
-        raise HTTPException(400, "No face enrolled. Complete enrollment first.")
-
-    session = db.query(ExamSession).filter(
-        ExamSession.id == payload.session_id,
-        ExamSession.user_id == user.id,
-    ).first()
-    if not session:
-        raise HTTPException(404, "Exam session not found")
-
-    # Decode photo and extract live embedding
-    try:
-        img_bytes = base64.b64decode(payload.face_image_base64)
-        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-        frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if frame is None:
-            raise ValueError("Could not decode image")
-        face_tensor = preprocess_face(frame)
-        with torch.no_grad():
-            live_emb = inception_resnet(face_tensor)
-        live_embedding = live_emb.cpu().numpy().flatten()
-    except Exception as e:
-        raise HTTPException(400, f"Could not process face image: {e}")
-
-    # Load stored embedding
-    stored_embedding = np.array(
-        [float(x) for x in user.face_embedding.split(",")],
-        dtype=np.float32,
-    )
-
-    # Cosine similarity
-    def cosine_sim(a, b):
-        na, nb = np.linalg.norm(a), np.linalg.norm(b)
-        if na < 1e-6 or nb < 1e-6: return 0.0
-        return float(np.dot(a, b) / (na * nb))
-
-    similarity = cosine_sim(live_embedding, stored_embedding)
-    verified   = similarity >= settings.FACE_SIMILARITY_THRESHOLD
-
-    # Update session verification status
-    session.face_verified     = verified
-    session.face_verify_score = similarity
-    db.commit()
-
-    # Also start recognizer session for mid-exam re-verification
-    if verified:
-        recognizer.start_session(session.id, user.id, live_embedding)
-
-    logger.info(
-        f"Face verify | user={user.email} | "
-        f"sim={similarity:.3f} | verified={verified}"
-    )
-    return VerifyFaceImageResponse(
-        verified         = verified,
-        similarity_score = round(similarity, 4),
-        session_id       = session.id,
-        message          = (
-            "Identity verified. Exam starting."
-            if verified else
-            f"Face not matched (score={similarity:.2f}, "
-            f"required={settings.FACE_SIMILARITY_THRESHOLD})"
-        ),
-    )
-# ─────────────────────────────────────────────────────────────────
-#  POST /enroll-face
-# ─────────────────────────────────────────────────────────────────
 @router.post(
     "/enroll-face",
     response_model=EnrollFaceResponse,
-    summary="Enroll face — server extracts real FaceNet embedding",
+    summary="Enroll face with multi-frame liveness detection",
 )
 def enroll_face(
     payload    : EnrollFaceRequest,
@@ -280,60 +210,222 @@ def enroll_face(
     db         : Session = Depends(get_db),
 ):
     """
-    Browser sends a base64 JPEG photo.
-    Server runs it through FaceNet and stores the real 512-d embedding.
-
-    No fake embeddings — this is the production-grade flow.
+    Enrollment with real multi-frame liveness:
+      1. Decode frame sequence from frontend
+      2. Run LivenessChecker on all frames
+         - Signal 1: blink cycle detected
+         - Signal 2: head movement across frames
+         - Signal 3: temporal texture variation
+      3. Require at least 2/3 signals to pass
+      4. Extract FaceNet embedding from the best (sharpest) frame
+      5. Store in DB
     """
+    logger.info(f"Enroll face request | user={token_data['sub']} | frames={len(payload.frame_sequence)}")   
     user = db.query(User).filter(User.email == token_data["sub"]).first()
     if not user:
         raise HTTPException(404, "User not found")
-
-    # ── Decode image ──────────────────────────────────────────────
+ 
+    # ── Decode frames ─────────────────────────────────────────────
+    frames = _decode_frame_sequence(payload.frame_sequence)
+    if len(frames) < 8:
+        raise HTTPException(
+            400,
+            f"Only {len(frames)} valid frames decoded. "
+            "Ensure camera is working and face is visible."
+        )
+ 
+    # ── Multi-frame liveness check ────────────────────────────────
+    checker        = get_liveness_checker()
+    liveness_result = checker.check(frames, fps=payload.fps)
+ 
+    logger.info(
+        f"Enroll liveness | user={user.email} | "
+        f"live={liveness_result.is_live} | "
+        f"signals={liveness_result.signals_passed}/3 | "
+        f"blink={liveness_result.blink_detected} "
+        f"move={liveness_result.head_moved} "
+        f"texture={liveness_result.temporal_varied}"
+    )
+ 
+    if not liveness_result.is_live:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Liveness check failed: {liveness_result.reason} "
+            f"(Passed {liveness_result.signals_passed}/3 signals: "
+            f"blink={'✓' if liveness_result.blink_detected else '✗'}, "
+            f"movement={'✓' if liveness_result.head_moved else '✗'}, "
+            f"variation={'✓' if liveness_result.temporal_varied else '✗'})"
+        )
+ 
+    # ── Pick best frame for embedding (sharpest = highest Laplacian) ──
+    best_frame = max(
+        frames,
+        key=lambda f: cv2.Laplacian(
+            cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), cv2.CV_64F
+        ).var()
+    )
+ 
+    # ── Extract FaceNet embedding ─────────────────────────────────
     try:
-        img_bytes = base64.b64decode(payload.face_image_base64)
-        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-        frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if frame is None:
-            raise ValueError("Could not decode image")
-    except Exception as e:
-        raise HTTPException(400, f"Invalid image: {e}")
-
-    # ── Extract FaceNet embedding server-side ─────────────────────
-    try:
-        face_tensor = preprocess_face(frame)   # from detector.py
+        face_tensor  = preprocess_face(best_frame)
         with torch.no_grad():
             embedding = inception_resnet(face_tensor)
         embedding_np = embedding.cpu().numpy().flatten()
     except Exception as e:
         logger.error(f"Embedding extraction failed: {e}")
-        raise HTTPException(500, "Face processing failed. Ensure your face is clearly visible.")
-
-    # Validate dimension
+        raise HTTPException(
+            500,
+            "Face embedding extraction failed. "
+            "Ensure your face is clearly visible and well-lit."
+        )
+ 
     if embedding_np.shape[0] != 512:
-        raise HTTPException(500, f"Wrong embedding dim: {embedding_np.shape[0]}")
-
+        raise HTTPException(500, f"Wrong embedding dimension: {embedding_np.shape[0]}")
+ 
     # ── Store in DB ───────────────────────────────────────────────
     user.face_embedding = ",".join(f"{x:.6f}" for x in embedding_np.tolist())
     db.commit()
-
-    # ── Register in recognizer (in-memory for fast lookup) ────────
-    success = recognizer.register(
-        user_id   = user.id,
-        full_name = user.full_name,
-        embedding = embedding_np,
-    )
+ 
+    # ── Register in recognizer ────────────────────────────────────
+    success = recognizer.register(user.id, user.full_name, embedding_np)
     if not success:
-        raise HTTPException(500, "Failed to register in face recognizer")
-
-    logger.info(f"Face enrolled (server-side) | user={user.email}")
+        raise HTTPException(500, "Failed to register face in recognizer")
+ 
+    logger.info(
+        f"Face enrolled (multi-frame liveness) | "
+        f"user={user.email} | signals={liveness_result.signals_passed}/3"
+    )
     return EnrollFaceResponse(
-        message  = "Face enrolled successfully. You can now start exams.",
-        email    = user.email,
-        user_id  = user.id,
-        enrolled = True,
+        message          = (
+            f"Face enrolled with liveness verification "
+            f"({liveness_result.signals_passed}/3 signals passed)."
+        ),
+        email            = user.email,
+        user_id          = user.id,
+        enrolled         = True,
+        liveness_signals = liveness_result.signals_passed,
     )
  
+ 
+# ─────────────────────────────────────────────
+#  FIXED: POST /verify-face  (multi-frame liveness)
+# ─────────────────────────────────────────────
+@router.post(
+    "/verify-face",
+    response_model=VerifyFaceImageResponse,
+    summary="Verify identity before exam — multi-frame liveness required",
+)
+def verify_face(
+    payload    : VerifyFaceRequest,
+    token_data : dict    = Depends(get_current_user_payload),
+    db         : Session = Depends(get_db),
+):
+    """
+    Pre-exam verification with multi-frame liveness.
+    Must pass liveness before identity comparison is even attempted.
+    """
+    user = db.query(User).filter(User.email == token_data["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+ 
+    if not user.face_embedding:
+        raise HTTPException(400, "No face enrolled. Complete enrollment first.")
+ 
+    session = db.query(ExamSession).filter(
+        ExamSession.id      == payload.session_id,
+        ExamSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(404, "Exam session not found")
+ 
+    # ── Decode frames ─────────────────────────────────────────────
+    frames = _decode_frame_sequence(payload.frame_sequence)
+    if len(frames) < 8:
+        return VerifyFaceImageResponse(
+            verified          = False,
+            similarity_score  = 0.0,
+            session_id        = payload.session_id,
+            message           = "Not enough valid frames. Check your camera.",
+            liveness_signals  = 0,
+        )
+ 
+    # ── Multi-frame liveness check ────────────────────────────────
+    checker        = get_liveness_checker()
+    liveness_result = checker.check(frames, fps=payload.fps)
+ 
+    logger.info(
+        f"Verify liveness | user={user.email} | "
+        f"live={liveness_result.is_live} signals={liveness_result.signals_passed}/3"
+    )
+ 
+    if not liveness_result.is_live:
+        return VerifyFaceImageResponse(
+            verified          = False,
+            similarity_score  = 0.0,
+            session_id        = payload.session_id,
+            message           = f"Liveness failed: {liveness_result.reason}",
+            liveness_signals  = liveness_result.signals_passed,
+        )
+ 
+    # ── Pick best frame for embedding ─────────────────────────────
+    best_frame = max(
+        frames,
+        key=lambda f: cv2.Laplacian(
+            cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), cv2.CV_64F
+        ).var()
+    )
+ 
+    # ── Extract live embedding ────────────────────────────────────
+    try:
+        face_tensor   = preprocess_face(best_frame)
+        with torch.no_grad():
+            live_emb  = inception_resnet(face_tensor)
+        live_embedding = live_emb.cpu().numpy().flatten()
+    except Exception as e:
+        raise HTTPException(400, f"Could not process face: {e}")
+ 
+    # ── Cosine similarity ─────────────────────────────────────────
+    stored = np.array(
+        [float(x) for x in user.face_embedding.split(",")],
+        dtype=np.float32,
+    )
+ 
+    def cosine_sim(a, b):
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        if na < 1e-6 or nb < 1e-6:
+            return 0.0
+        return float(np.dot(a, b) / (na * nb))
+ 
+    similarity = cosine_sim(live_embedding, stored)
+    verified   = similarity >= settings.FACE_SIMILARITY_THRESHOLD
+ 
+    # ── Update session ────────────────────────────────────────────
+    session.face_verified     = verified
+    session.face_verify_score = similarity
+    db.commit()
+ 
+    if verified:
+        recognizer.start_session(session.id, user.id, live_embedding)
+ 
+    logger.info(
+        f"Verify-face result | user={user.email} | "
+        f"sim={similarity:.3f} verified={verified} | "
+        f"liveness={liveness_result.signals_passed}/3"
+    )
+    return VerifyFaceImageResponse(
+        verified          = verified,
+        similarity_score  = round(similarity, 4),
+        session_id        = session.id,
+        message           = (
+            f"Identity verified (similarity={similarity:.2f}, "
+            f"liveness={liveness_result.signals_passed}/3 signals)."
+            if verified else
+            f"Verification failed (similarity={similarity:.2f}, "
+            f"required={settings.FACE_SIMILARITY_THRESHOLD})"
+        ),
+        liveness_signals  = liveness_result.signals_passed,
+    )
+
 # ─────────────────────────────────────────────
 #  GET /enroll-status
 # ─────────────────────────────────────────────
