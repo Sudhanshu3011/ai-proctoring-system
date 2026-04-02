@@ -65,6 +65,7 @@ dependencies = [
     "requests==2.32.5",
     "rsa==4.9.1",
     "scipy==1.17.1",
+    "setuptools<81",
     "six==1.17.0",
     "sounddevice==0.5.5",
     "sqlalchemy==2.0.48",
@@ -84,4 +85,8 @@ dependencies = [
     "webrtcvad==2.0.10",
     "websockets==16.0",
 ]
-
+[tool.pytest.ini_options]
+markers = [
+    "unit: unit tests — no server or DB needed",
+    "api:  API integration tests — requires running server",
+]
