@@ -1,170 +1,256 @@
-// src/components/FaceVerifyModal.js
-// Called right before exam starts — verifies live face matches enrolled face
+// src/components/FaceVerifyModal.js — MULTI-FRAME LIVENESS VERSION
+// Captures 3 seconds of frames, shows liveness guidance, sends sequence to backend
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { authAPI } from '../services/api';
+
+const CAPTURE_FPS       = 8;
+const CAPTURE_SECONDS   = 3;
+const TOTAL_FRAMES      = CAPTURE_FPS * CAPTURE_SECONDS;
+const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 
 export default function FaceVerifyModal({ sessionId, onVerified, onFailed }) {
   const videoRef  = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const captureRef= useRef(null);
 
-  const [status,   setStatus]  = useState('waiting');  // waiting|capturing|verifying|done|failed
-  const [message,  setMessage] = useState('Look at the camera and blink once');
-  const [score,    setScore]   = useState(null);
+  const [phase,    setPhase]   = useState('ready');  // ready|countdown|capturing|verifying|done|failed
+  const [progress, setProgress]= useState(0);
+  const [countdown,setCount]   = useState(null);
   const [attempts, setAttempts]= useState(0);
+  const [message,  setMessage] = useState('Click Verify to begin liveness check');
+  const [score,    setScore]   = useState(null);
+  const [liveSigs, setLiveSigs]= useState(null);
 
   useEffect(() => {
     startCamera();
-    return () => stopCamera();
+    return () => { stopEverything(); };
   }, []);
 
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'user' },
+        video: { width: 640, height: 480, facingMode: 'user', frameRate: CAPTURE_FPS },
       });
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
-      setStatus('capturing');
     } catch {
-      setStatus('failed');
+      setPhase('failed');
       setMessage('Camera access denied. Cannot verify identity.');
     }
   };
 
-  const stopCamera = () =>
+  const stopEverything = () => {
+    if (captureRef.current) clearInterval(captureRef.current);
     streamRef.current?.getTracks().forEach(t => t.stop());
+  };
 
-  const captureAndVerify = useCallback(async () => {
-    const canvas = canvasRef.current;
-    const video  = videoRef.current;
-    if (!canvas || !video) return;
+  const startVerify = () => {
+    let c = 3;
+    setCount(c);
+    setPhase('countdown');
+    const timer = setInterval(() => {
+      c--;
+      if (c <= 0) { clearInterval(timer); setCount(null); beginCapture(); }
+      else setCount(c);
+    }, 1000);
+  };
 
-    setStatus('verifying');
-    setMessage('Verifying identity...');
+  const beginCapture = useCallback(() => {
+    const collected = [];
+    let frameCount  = 0;
+    setPhase('capturing');
+    setProgress(0);
 
-    // Capture frame
-    canvas.width  = video.videoWidth  || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    ctx.translate(canvas.width, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const b64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+    captureRef.current = setInterval(() => {
+      const canvas = canvasRef.current;
+      const video  = videoRef.current;
+      if (!canvas || !video || video.readyState < 2) return;
+
+      canvas.width  = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, 320, 240);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+      const b64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+      collected.push(b64);
+      frameCount++;
+      setProgress(Math.min(100, (frameCount / TOTAL_FRAMES) * 100));
+
+      if (frameCount >= TOTAL_FRAMES) {
+        clearInterval(captureRef.current);
+        submitVerification(collected);
+      }
+    }, FRAME_INTERVAL_MS);
+  }, [sessionId, attempts]);
+
+  const submitVerification = async (frameList) => {
+    setPhase('verifying');
+    setMessage('Analysing liveness and verifying identity...');
 
     try {
-      const res = await authAPI.verifyFace({
-        session_id:       sessionId,
-        face_image_base64: b64,      // backend extracts embedding and compares
+      const res  = await authAPI.verifyFace({
+        session_id:     sessionId,
+        frame_sequence: frameList,
+        fps:            CAPTURE_FPS,
       });
-
       const data = res.data;
       setScore(data.similarity_score);
+      setLiveSigs(data.liveness_signals);
 
       if (data.verified) {
-        setStatus('done');
-        setMessage('Identity verified! Starting exam...');
-        stopCamera();
+        setPhase('done');
+        setMessage('Identity verified with liveness check.');
+        stopEverything();
         setTimeout(() => onVerified(), 1200);
       } else {
-        setAttempts(a => a + 1);
-        if (attempts >= 2) {
-          setStatus('failed');
-          setMessage(`Verification failed (score: ${(data.similarity_score * 100).toFixed(0)}%). Contact your invigilator.`);
-          stopCamera();
+        const nextAttempt = attempts + 1;
+        setAttempts(nextAttempt);
+        if (nextAttempt >= 3) {
+          setPhase('failed');
+          setMessage(`Verification failed after 3 attempts. ${data.message}`);
+          stopEverything();
           setTimeout(() => onFailed(), 3000);
         } else {
-          setStatus('capturing');
-          setMessage(`Face not matched (${(data.similarity_score * 100).toFixed(0)}% similarity). Try again — ensure good lighting.`);
+          setPhase('ready');
+          setMessage(`Attempt ${nextAttempt + 1}/3: ${data.message}`);
         }
       }
     } catch (e) {
-      setAttempts(a => a + 1);
-      setStatus('capturing');
+      const nextAttempt = attempts + 1;
+      setAttempts(nextAttempt);
+      setPhase('ready');
       setMessage(e.response?.data?.detail || 'Verification error. Try again.');
     }
-  }, [sessionId, attempts, onVerified, onFailed]);
-
-  const statusConfig = {
-    waiting:    { color: 'var(--muted)',   icon: '👤' },
-    capturing:  { color: 'var(--accent)',  icon: '📷' },
-    verifying:  { color: 'var(--warn)',    icon: '🔍' },
-    done:       { color: 'var(--safe)',    icon: '✓'  },
-    failed:     { color: 'var(--high)',    icon: '✗'  },
   };
-  const cfg = statusConfig[status] || statusConfig.waiting;
+
+  const phaseColors = {
+    ready:      'var(--accent)',
+    countdown:  'var(--accent)',
+    capturing:  '#ef4444',
+    verifying:  'var(--warn)',
+    done:       'var(--safe)',
+    failed:     'var(--high)',
+  };
+  const col = phaseColors[phase] || 'var(--muted)';
+
+  // Capture instructions
+  const captureInstructions = [
+    { pct: 0,  text: 'Look at camera',         icon: '👁' },
+    { pct: 33, text: 'Blink naturally',          icon: '😑' },
+    { pct: 66, text: 'Slight head movement',     icon: '↔'  },
+  ];
+  const currentInstruction = captureInstructions.reduce(
+    (acc, ins) => progress >= ins.pct ? ins : acc
+  );
 
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 200,
       background: 'rgba(8,12,20,0.92)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: '24px',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px',
     }}>
       <div className="card animate-in" style={{ width: '100%', maxWidth: '460px' }}>
 
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-          <div style={{ fontSize: '28px', marginBottom: '8px' }}>{cfg.icon}</div>
+        <div style={{ textAlign: 'center', marginBottom: '16px' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '4px' }}>Identity Verification</h2>
-          <p style={{ color: 'var(--muted)', fontSize: '12px' }}>
-            Step 1 of 1 — required before exam begins
+          <p style={{ color: 'var(--muted)', fontSize: '11px' }}>
+            Multi-frame liveness check — 3 seconds required
           </p>
         </div>
 
         {/* Camera view */}
         <div style={{
           position: 'relative', borderRadius: '10px', overflow: 'hidden',
-          background: '#000', aspectRatio: '4/3', marginBottom: '16px',
+          background: '#000', aspectRatio: '4/3', marginBottom: '14px',
         }}>
           <video ref={videoRef} autoPlay playsInline muted
-            style={{
-              width: '100%', height: '100%', objectFit: 'cover',
-              transform: 'scaleX(-1)', display: 'block',
-            }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover',
+              transform: 'scaleX(-1)', display: 'block' }}
           />
-          {/* Animated border when verifying */}
-          <div style={{
-            position: 'absolute', inset: 0,
-            border: `3px solid ${cfg.color}`,
-            borderRadius: '10px', pointerEvents: 'none',
-            opacity: status === 'verifying' ? 1 : 0,
-            animation: status === 'verifying' ? 'pulse 1s infinite' : 'none',
-            transition: 'opacity 0.3s',
-          }} />
-          {/* Face guide */}
-          {(status === 'capturing' || status === 'waiting') && (
+
+          {/* Face guide oval */}
+          {(phase === 'ready' || phase === 'countdown') && (
             <div style={{
               position: 'absolute', inset: 0, pointerEvents: 'none',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
               <div style={{
                 width: 160, height: 200,
-                border: `2px dashed ${cfg.color}`,
-                borderRadius: '50%',
+                border: `2px dashed ${col}`, borderRadius: '50%',
                 boxShadow: '0 0 0 9999px rgba(0,0,0,0.2)',
               }} />
             </div>
           )}
-          {/* Loading spinner */}
-          {status === 'verifying' && (
+
+          {/* Countdown */}
+          {phase === 'countdown' && countdown !== null && (
             <div style={{
-              position: 'absolute', inset: 0, background: 'rgba(8,12,20,0.7)',
+              position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              flexDirection: 'column', gap: 10,
+            }}>
+              <div style={{
+                fontSize: '80px', fontFamily: 'Syne', fontWeight: 800,
+                color: 'white', animation: 'pulse 1s infinite',
+              }}>
+                {countdown}
+              </div>
+            </div>
+          )}
+
+          {/* Recording indicator */}
+          {phase === 'capturing' && (
+            <>
+              <div style={{
+                position: 'absolute', top: 10, left: 10,
+                background: 'rgba(220,38,38,0.85)', borderRadius: '20px',
+                padding: '3px 10px', fontSize: '10px', color: 'white',
+                display: 'flex', alignItems: 'center', gap: '5px',
+              }}>
+                <span style={{ animation: 'pulse 1s infinite' }}>●</span> Recording
+              </div>
+              {/* Instruction overlay */}
+              <div style={{
+                position: 'absolute', bottom: 10, left: 0, right: 0,
+                display: 'flex', justifyContent: 'center',
+              }}>
+                <div style={{
+                  background: 'rgba(0,0,0,0.75)', borderRadius: '20px',
+                  padding: '6px 16px', fontSize: '12px', fontFamily: 'Syne',
+                  color: 'white', display: 'flex', alignItems: 'center', gap: '6px',
+                }}>
+                  <span style={{ fontSize: '16px' }}>{currentInstruction.icon}</span>
+                  {currentInstruction.text}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Verifying spinner */}
+          {phase === 'verifying' && (
+            <div style={{
+              position: 'absolute', inset: 0, background: 'rgba(8,12,20,0.8)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10,
             }}>
               <div style={{
                 width: 40, height: 40, border: '3px solid var(--border)',
                 borderTopColor: 'var(--accent)', borderRadius: '50%',
                 animation: 'spin 0.8s linear infinite',
               }} />
-              <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+              <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+              <div style={{ color: 'white', fontSize: '12px', fontFamily: 'Syne' }}>
+                Analysing {TOTAL_FRAMES} frames...
+              </div>
             </div>
           )}
-          {/* Done overlay */}
-          {status === 'done' && (
+
+          {/* Done tick */}
+          {phase === 'done' && (
             <div style={{
               position: 'absolute', inset: 0, background: 'rgba(5,46,22,0.7)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -172,73 +258,108 @@ export default function FaceVerifyModal({ sessionId, onVerified, onFailed }) {
               <div style={{ fontSize: '60px' }}>✓</div>
             </div>
           )}
+
           {/* Status chip */}
           <div style={{
             position: 'absolute', bottom: 10, left: 10,
             background: 'rgba(0,0,0,0.75)', borderRadius: '20px',
-            padding: '4px 12px', fontSize: '10px', color: cfg.color,
+            padding: '3px 10px', fontSize: '10px', color: col,
+            display: phase === 'capturing' ? 'none' : 'block',
           }}>
-            {status === 'verifying' ? '● Verifying...' :
-             status === 'done'      ? '✓ Verified'     :
-             status === 'failed'    ? '✗ Failed'       :
-             '● Camera active'}
+            {phase === 'ready'     ? '● Camera active'     : ''}
+            {phase === 'done'      ? '✓ Verified'          : ''}
+            {phase === 'failed'    ? '✗ Failed'            : ''}
+            {phase === 'verifying' ? '● Processing'        : ''}
           </div>
         </div>
 
-        {/* Similarity score bar */}
-        {score !== null && (
+        {/* Progress bar (only during capture) */}
+        {phase === 'capturing' && (
+          <div style={{ marginBottom: '10px' }}>
+            <div style={{ height: 6, background: 'var(--border)', borderRadius: 3 }}>
+              <div style={{
+                height: '100%', borderRadius: 3,
+                width: `${progress}%`, background: '#ef4444',
+                transition: 'width 0.15s',
+              }} />
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--muted)', textAlign: 'right', marginTop: 3 }}>
+              {Math.round(progress)}% captured
+            </div>
+          </div>
+        )}
+
+        {/* Liveness signals */}
+        {liveSigs !== null && (
+          <div style={{ marginBottom: '10px' }}>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>
+              Liveness signals: {liveSigs}/3
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              {['Blink', 'Movement', 'Variation'].map((label, i) => (
+                <div key={label} style={{
+                  flex: 1, textAlign: 'center', padding: '4px 6px',
+                  borderRadius: 6, fontSize: '10px',
+                  background: i < liveSigs ? '#052e16' : 'var(--bg3)',
+                  border: `1px solid ${i < liveSigs ? '#14532d' : 'var(--border)'}`,
+                  color: i < liveSigs ? 'var(--safe)' : 'var(--muted)',
+                }}>
+                  {i < liveSigs ? '✓' : '✗'} {label}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Similarity bar */}
+        {score !== null && phase !== 'ready' && (
           <div style={{ marginBottom: '12px' }}>
             <div style={{
               display: 'flex', justifyContent: 'space-between',
               fontSize: '11px', color: 'var(--muted)', marginBottom: '4px',
             }}>
-              <span>Similarity score</span>
+              <span>Identity similarity</span>
               <span style={{ color: score >= 0.75 ? 'var(--safe)' : 'var(--high)', fontWeight: 700 }}>
                 {(score * 100).toFixed(1)}%
               </span>
             </div>
-            <div style={{ height: 6, background: 'var(--border)', borderRadius: 3 }}>
+            <div style={{ height: 5, background: 'var(--border)', borderRadius: 3 }}>
               <div style={{
-                height: '100%', borderRadius: 3,
-                width: `${score * 100}%`,
+                height: '100%', borderRadius: 3, width: `${score * 100}%`,
                 background: score >= 0.75 ? 'var(--safe)' : score >= 0.5 ? 'var(--warn)' : 'var(--high)',
                 transition: 'width 0.5s',
               }} />
-            </div>
-            <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: 3 }}>
-              Required: 75% minimum
             </div>
           </div>
         )}
 
         {/* Message */}
         <div style={{
-          background: status === 'done' ? '#052e16' : status === 'failed' ? '#1a0505' : 'var(--bg3)',
-          border: `1px solid ${status === 'done' ? '#14532d' : status === 'failed' ? '#7f1d1d' : 'var(--border)'}`,
+          background: phase === 'done' ? '#052e16' : phase === 'failed' ? '#1a0505' : 'var(--bg3)',
+          border: `1px solid ${phase === 'done' ? '#14532d' : phase === 'failed' ? '#7f1d1d' : 'var(--border)'}`,
           borderRadius: '8px', padding: '10px 14px',
-          color: cfg.color, fontSize: '12px', marginBottom: '16px',
-          textAlign: 'center',
+          color: col, fontSize: '12px', marginBottom: '14px', textAlign: 'center',
         }}>
           {message}
-          {attempts > 0 && status !== 'failed' && (
-            <div style={{ color: 'var(--muted)', fontSize: '11px', marginTop: '4px' }}>
+          {attempts > 0 && phase === 'ready' && (
+            <div style={{ color: 'var(--muted)', fontSize: '10px', marginTop: '3px' }}>
               Attempt {attempts + 1} of 3
             </div>
           )}
         </div>
 
-        {/* Verify button */}
-        {(status === 'capturing') && (
+        {/* Action button */}
+        {phase === 'ready' && (
           <button className="btn-primary"
             style={{ width: '100%', padding: '12px', fontSize: '14px' }}
-            onClick={captureAndVerify}>
-            Verify My Identity →
+            onClick={startVerify}>
+            ▶ Start Liveness Verification ({CAPTURE_SECONDS}s)
           </button>
         )}
 
-        {status === 'failed' && (
+        {phase === 'failed' && (
           <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '12px' }}>
-            Redirecting... Contact your invigilator if this is an error.
+            Redirecting to dashboard...
           </div>
         )}
       </div>
