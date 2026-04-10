@@ -38,7 +38,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ai_engine.logger import get_logger
-from ai_engine.face_module.recognizer          import recognizer
+from ai_engine.face_module.recognizer          import recognizer,FaceRecognizer
 from ai_engine.head_pose_module.pose_estimator import PoseEstimator
 from ai_engine.object_detector.yolo_detector     import ObjectDetector
 from ai_engine.behaviour_module.anomaly_detector import (
@@ -129,7 +129,7 @@ class VideoWorker:
         self._last_reverify_time  = time.time()
         self._last_db_sync_time   = time.time()
         self._violations_log      : list[str] = []
-
+        
         logger.info(
             f"VideoWorker created | "
             f"session={session_id} | user={user_id}"
@@ -179,9 +179,7 @@ class VideoWorker:
         Frames arrive via process_external_frame() called from the WebSocket.
         Worker only handles periodic tasks: re-verification timer and DB sync.
         """
-        logger.info(
-            f"VideoWorker running (frame-less mode) | session={self.session_id}"
-        )
+        logger.info(f"VideoWorker running (frame-less mode) | session={self.session_id}")
 
         while self._running and not self._stop_event.is_set():
             now = time.time()

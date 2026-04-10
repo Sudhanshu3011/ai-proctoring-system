@@ -433,18 +433,3 @@ def faceDetection() -> dict | None:
         cv2.destroyAllWindows()
 
     return None
-
-
-# ─────────────────────────────────────────────
-#  Standalone run
-# ─────────────────────────────────────────────
-if __name__ == "__main__":
-    import os
-    os.environ["QT_QPA_PLATFORM"] = "xcb"   # Ubuntu/Wayland fix
-
-    result = faceDetection()
-    if result:
-        logger.info(f"Detection complete: {result['message']}")
-        logger.info(f"Embedding length  : {len(result['embedding_base64'])} chars (base64)")
-    else:
-        logger.error("Detection failed.")

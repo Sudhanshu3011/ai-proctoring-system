@@ -1,134 +1,175 @@
-// src/pages/AdminPage.js — COMPLETE with live monitoring dashboard
-import React, { useEffect, useState, useRef } from 'react';
+// src/pages/AdminPage.js — professional, style/logic separated
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { examAPI, adminAPI } from '../services/api';
 import { useAdminSocket } from '../hooks/useAdminSocket';
+import { colors, fonts, radius, shadow, statusConfig } from '../styles/theme';
+import { nav, card, btn, text, badge, statusPill, table, modal } from '../styles/styles';
 
-// ── Risk level config ─────────────────────────────────────────────
-const LEVEL = {
-  SAFE    : { color:'#10b981', bg:'#052e16', border:'#14532d', label:'Safe'     },
-  WARNING : { color:'#f59e0b', bg:'#1c1003', border:'#78350f', label:'Warning'  },
-  HIGH    : { color:'#ef4444', bg:'#1a0505', border:'#7f1d1d', label:'High Risk' },
-  CRITICAL: { color:'#dc2626', bg:'#1a0505', border:'#991b1b', label:'Critical' },
+// ── All styles ────────────────────────────────────────────────────
+const S = {
+  summaryStrip: {
+    background: colors.white,
+    borderBottom: `1px solid ${colors.gray200}`,
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5,1fr)',
+    padding: '0 24px',
+  },
+  summaryCell: {
+    padding: '12px 0',
+    textAlign: 'center',
+    borderRight: `1px solid ${colors.gray100}`,
+  },
+  summaryVal: (col) => ({
+    fontFamily: fonts.mono,
+    fontSize: '22px',
+    fontWeight: 600,
+    color: col,
+    lineHeight: 1,
+  }),
+  summaryLbl: {
+    fontSize: '10px',
+    fontWeight: 700,
+    color: colors.gray400,
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    marginTop: '3px',
+    fontFamily: fonts.ui,
+  },
+  tabBar: {
+    background: colors.white,
+    borderBottom: `1px solid ${colors.gray200}`,
+    display: 'flex',
+    padding: '0 24px',
+  },
+  tabBtn: (active) => ({
+    fontFamily: fonts.ui,
+    fontWeight: active ? 600 : 400,
+    fontSize: '13px',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: `2px solid ${active ? colors.accent : 'transparent'}`,
+    color: active ? colors.accent : colors.gray500,
+    padding: '12px 16px',
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  }),
+  sessionCard: (selected, level) => {
+    const cfg = statusConfig[level] || statusConfig.SAFE;
+    return {
+      background: selected ? colors.brandLight : colors.white,
+      border: `1px solid ${selected ? colors.brandBorder : colors.gray200}`,
+      borderRadius: radius.lg,
+      padding: '16px',
+      cursor: 'pointer',
+      transition: 'all 0.15s',
+      boxShadow: selected ? `0 0 0 2px ${colors.accent}20` : shadow.xs,
+    };
+  },
+  scoreNum: (col) => ({
+    fontFamily: fonts.mono,
+    fontSize: '28px',
+    fontWeight: 700,
+    color: col,
+    lineHeight: 1,
+  }),
+  moduleBar: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px' },
+  modLabel: { fontSize: '11px', color: colors.gray500, width: '50px', fontFamily: fonts.ui },
+  barTrack: { flex: 1, height: '3px', background: colors.gray200, borderRadius: '99px' },
+  barFill: (pct, col) => ({
+    height: '100%', width: `${Math.min(100, pct || 0)}%`,
+    background: col,
+    borderRadius: '99px',
+    transition: 'width 0.6s ease',
+  }),
+  violRow: (high) => ({
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '6px 10px',
+    borderRadius: radius.sm,
+    marginBottom: '4px',
+    background: high ? colors.dangerLight : colors.gray50,
+    border: `1px solid ${high ? colors.dangerBorder : colors.gray200}`,
+    fontSize: '11px',
+  }),
+  detailPanel: {
+    width: '340px',
+    background: colors.white,
+    borderLeft: `1px solid ${colors.gray200}`,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0',
+  },
+  detailSection: {
+    padding: '16px',
+    borderBottom: `1px solid ${colors.gray200}`,
+  },
 };
 
-// ── Score bar component ───────────────────────────────────────────
-function ScoreBar({ value, max = 100 }) {
-  const pct = Math.min(100, (value / max) * 100);
-  const col = pct > 60 ? '#ef4444' : pct > 30 ? '#f59e0b' : '#10b981';
+// ── Score bar ─────────────────────────────────────────────────────
+function ModuleBar({ label, value }) {
+  const pct = Math.min(100, value || 0);
+  const col = pct > 60 ? colors.dangerMid : pct > 30 ? colors.warningMid : colors.gray300;
   return (
-    <div style={{ height: 4, background: '#1e2d45', borderRadius: 2, overflow: 'hidden' }}>
-      <div style={{
-        height: '100%', width: `${pct}%`,
-        background: col, borderRadius: 2,
-        transition: 'width 0.8s ease',
-      }}/>
+    <div style={S.moduleBar}>
+      <span style={S.modLabel}>{label}</span>
+      <div style={S.barTrack}><div style={S.barFill(pct, col)} /></div>
+      <span style={{ fontSize: '10px', color: colors.gray400, width: '24px', textAlign: 'right', fontFamily: fonts.mono }}>
+        {pct.toFixed(0)}
+      </span>
     </div>
   );
 }
 
 // ── Session card ──────────────────────────────────────────────────
-function SessionCard({ session, onTerminate, onSelect, selected }) {
-  const lvl = LEVEL[session.risk_level] || LEVEL.SAFE;
-  const isHigh = ['HIGH', 'CRITICAL'].includes(session.risk_level);
-
+function SessionCard({ session, selected, onSelect, onTerminate }) {
+  const cfg = statusConfig[session.risk_level] || statusConfig.SAFE;
   return (
-    <div onClick={() => onSelect(session)}
-      style={{
-        background: selected ? '#0d1a2e' : 'var(--card)',
-        border: `1px solid ${selected ? 'var(--accent)' : isHigh ? lvl.border : 'var(--border)'}`,
-        borderRadius: 12, padding: '16px',
-        cursor: 'pointer',
-        transition: 'all 0.2s',
-        animation: isHigh ? 'pulse-border 2s infinite' : 'none',
-      }}>
-
-      {/* Header row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+    <div style={S.sessionCard(selected, session.risk_level)}
+      onClick={() => onSelect(session)}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
         <div>
-          <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: 14, marginBottom: 2 }}>
+          <div style={{ fontWeight: 600, fontSize: '14px', color: colors.gray900, marginBottom: '2px' }}>
             {session.user_name}
           </div>
-          <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-            {session.exam_title}
-          </div>
+          <div style={{ fontSize: '11px', color: colors.gray500 }}>{session.exam_title}</div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-          <div style={{
-            padding: '3px 10px', borderRadius: 20, fontSize: 11,
-            fontFamily: 'Syne', fontWeight: 700,
-            background: lvl.bg, border: `1px solid ${lvl.border}`,
-            color: lvl.color,
-          }}>
-            {lvl.label}
-          </div>
-          <div style={{ color: 'var(--muted)', fontSize: 10 }}>
-            {session.duration_minutes}m elapsed
-          </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+          <span style={{ ...badge.base, background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
+            {cfg.label}
+          </span>
+          <span style={{ fontSize: '10px', color: colors.gray400, fontFamily: fonts.mono }}>
+            {session.duration_minutes}m
+          </span>
         </div>
       </div>
 
-      {/* Big score */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 10 }}>
-        <span style={{
-          fontFamily: 'Syne', fontWeight: 800, fontSize: 32,
-          color: lvl.color,
-        }}>
-          {session.risk_score.toFixed(1)}
-        </span>
-        <span style={{ color: 'var(--muted)', fontSize: 12 }}>/ 100</span>
-        <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11 }}>
-          P(cheat): {(session.cheat_probability * 100).toFixed(0)}%
+      <div style={{ marginBottom: '8px' }}>
+        <span style={S.scoreNum(cfg.color)}>{session.risk_score.toFixed(1)}</span>
+        <span style={{ fontSize: '12px', color: colors.gray400, fontFamily: fonts.mono }}>/100</span>
+        <span style={{ fontSize: '12px', color: colors.gray500, marginLeft: '12px' }}>
+          P: {(session.cheat_probability * 100).toFixed(0)}%
         </span>
       </div>
 
-      {/* Overall score bar */}
-      <ScoreBar value={session.risk_score} />
-
-      {/* Module mini-bars */}
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
-        gap: 6, marginTop: 10, marginBottom: 12,
-      }}>
-        {[
-          ['Face',    session.face_score],
-          ['Pose',    session.pose_score],
-          ['Object',  session.object_score],
-          ['Audio',   session.audio_score],
-          ['Browser', session.browser_score],
-        ].map(([name, val]) => (
-          <div key={name}>
-            <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 2, textAlign: 'center' }}>
-              {name}
-            </div>
-            <ScoreBar value={val} max={80} />
-            <div style={{ fontSize: 9, color: 'var(--muted)', textAlign: 'center', marginTop: 1 }}>
-              {val.toFixed(0)}
-            </div>
-          </div>
-        ))}
+      {/* Score bar */}
+      <div style={{ height: '3px', background: colors.gray200, borderRadius: '99px', marginBottom: '10px' }}>
+        <div style={S.barFill(session.risk_score, cfg.color)} />
       </div>
 
-      {/* Footer row */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-      }}>
-        <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-          ⚠ {session.violation_count} violations
-        </div>
-        {isHigh && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onTerminate(session); }}
-            style={{
-              background: '#450a0a', border: '1px solid #7f1d1d',
-              color: '#f87171', borderRadius: 6, padding: '4px 12px',
-              fontSize: 11, fontFamily: 'Syne', fontWeight: 700,
-              cursor: 'pointer', transition: 'all 0.2s',
-            }}
-            onMouseOver={e => e.target.style.background = '#7f1d1d'}
-            onMouseOut={e  => e.target.style.background = '#450a0a'}
-          >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: '11px', color: colors.gray500 }}>
+          {session.violation_count} violations
+        </span>
+        {['HIGH', 'CRITICAL'].includes(session.risk_level) && (
+          <button className="btn-danger" style={{ ...btn.danger, fontSize: '11px', padding: '3px 10px' }}
+            onClick={(e) => { e.stopPropagation(); onTerminate(session); }}>
             Terminate
           </button>
         )}
@@ -138,283 +179,164 @@ function SessionCard({ session, onTerminate, onSelect, selected }) {
 }
 
 // ── Detail panel ──────────────────────────────────────────────────
-function SessionDetail({ session, onClose, onTerminate }) {
-  const [detail, setDetail] = useState(null);
-
-  useEffect(() => {
-    if (!session) return;
-    adminAPI.sessionDetail(session.session_id)
-      .then(r => setDetail(r.data))
-      .catch(console.error);
-  }, [session?.session_id]);
-
+function DetailPanel({ session, detail, onClose, onTerminate }) {
   if (!session) return null;
-  const lvl = LEVEL[session.risk_level] || LEVEL.SAFE;
-
+  const cfg = statusConfig[session.risk_level] || statusConfig.SAFE;
   return (
-    <div style={{
-      background: 'var(--bg2)', borderLeft: '1px solid var(--border)',
-      height: '100%', overflowY: 'auto', padding: 20,
-      display: 'flex', flexDirection: 'column', gap: 16,
-    }}>
-      {/* Close */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ fontFamily: 'Syne', fontSize: 16 }}>Session Detail</h3>
-        <button className="btn-ghost" style={{ padding: '4px 10px', fontSize: 11 }}
-          onClick={onClose}>✕ Close</button>
+    <div style={S.detailPanel}>
+      {/* Header */}
+      <div style={{ ...S.detailSection, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: 700, fontSize: '13px', color: colors.gray900 }}>Session Detail</span>
+        <button style={{ ...btn.ghost, padding: '4px 8px', fontSize: '16px' }} onClick={onClose}>×</button>
       </div>
-
       {/* Identity */}
-      <div className="card" style={{ padding: 14 }}>
-        <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
-          {session.user_name}
-        </div>
-        <div style={{ color: 'var(--muted)', fontSize: 11, marginBottom: 2 }}>
-          {session.user_email}
-        </div>
-        <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-          Exam: {session.exam_title}
-        </div>
-        <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-          Duration: {session.duration_minutes} minutes
-        </div>
+      <div style={S.detailSection}>
+        <div style={{ fontWeight: 700, fontSize: '14px', color: colors.gray900 }}>{session.user_name}</div>
+        <div style={{ fontSize: '11px', color: colors.gray500, marginTop: '2px' }}>{session.user_email}</div>
+        <div style={{ fontSize: '11px', color: colors.gray500, marginTop: '6px' }}>{session.exam_title}</div>
       </div>
-
-      {/* Risk overview */}
-      <div className="card" style={{ padding: 14 }}>
-        <div style={{
-          fontFamily: 'Syne', fontWeight: 800, fontSize: 40,
-          color: lvl.color, lineHeight: 1, marginBottom: 4,
-        }}>
-          {session.risk_score.toFixed(1)}
-          <span style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 400 }}>/100</span>
-        </div>
-        <div style={{
-          display: 'inline-block', padding: '3px 10px', borderRadius: 20,
-          background: lvl.bg, border: `1px solid ${lvl.border}`,
-          color: lvl.color, fontSize: 11, fontFamily: 'Syne', fontWeight: 700,
-          marginBottom: 10,
-        }}>
-          {lvl.label}
-        </div>
-        <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-          Cheat probability: {(session.cheat_probability * 100).toFixed(1)}%
-        </div>
+      {/* Score */}
+      <div style={S.detailSection}>
+        <div style={S.scoreNum(cfg.color)}>{session.risk_score.toFixed(1)}</div>
+        <span style={{ ...badge.base, ...{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, marginTop: '8px', display: 'inline-flex' } }}>
+          {cfg.label}
+        </span>
       </div>
-
-      {/* Module breakdown */}
-      <div className="card" style={{ padding: 14 }}>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          MODULE SCORES
-        </div>
-        {[
-          ['👤 Face',    session.face_score],
-          ['👁 Pose',    session.pose_score],
-          ['📱 Object',  session.object_score],
-          ['🎙 Audio',   session.audio_score],
-          ['🌐 Browser', session.browser_score],
-        ].map(([name, val]) => (
-          <div key={name} style={{
-            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
-          }}>
-            <span style={{ fontSize: 12, width: 76, color: 'var(--muted)' }}>{name}</span>
-            <div style={{ flex: 1 }}>
-              <ScoreBar value={val} max={80}/>
-            </div>
-            <span style={{ fontSize: 11, color: 'var(--muted)', width: 28, textAlign: 'right' }}>
-              {val.toFixed(0)}
+      {/* Modules */}
+      <div style={S.detailSection}>
+        <div style={text.sectionTitle}>Module Scores</div>
+        {[['Face', session.face_score], ['Pose', session.pose_score], ['Objects', session.object_score], ['Audio', session.audio_score], ['Browser', session.browser_score]].map(([n, v]) => (
+          <ModuleBar key={n} label={n} value={v} />
+        ))}
+      </div>
+      {/* Violations */}
+      <div style={{ ...S.detailSection, flex: 1 }}>
+        <div style={text.sectionTitle}>Recent Violations</div>
+        {!detail?.recent_violations?.length ? (
+          <div style={{ fontSize: '12px', color: colors.successMid }}>None recorded</div>
+        ) : detail.recent_violations.map((v, i) => (
+          <div key={i} style={S.violRow(v.weight >= 30)}>
+            <span style={{ fontWeight: 600, color: v.weight >= 30 ? colors.dangerMid : colors.gray700 }}>{v.type}</span>
+            <span style={{ ...badge.base, background: v.weight >= 30 ? colors.dangerLight : colors.gray100, color: v.weight >= 30 ? colors.dangerMid : colors.gray600, border: 'none', fontSize: '10px' }}>
+              w:{v.weight}
             </span>
           </div>
         ))}
       </div>
-
-      {/* Recent violations */}
-      <div className="card" style={{ padding: 14, flex: 1 }}>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          RECENT VIOLATIONS
-        </div>
-        {!detail?.recent_violations?.length ? (
-          <div style={{ color: 'var(--safe)', fontSize: 12, textAlign: 'center', padding: 16 }}>
-            ✓ No violations yet
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {detail.recent_violations.map((v, i) => (
-              <div key={i} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '6px 10px', borderRadius: 6,
-                background: v.weight >= 30 ? '#1a0505' : 'var(--bg3)',
-                border: `1px solid ${v.weight >= 30 ? '#7f1d1d' : 'var(--border)'}`,
-                fontSize: 11,
-              }}>
-                <span style={{
-                  color: v.weight >= 30 ? '#f87171' : 'var(--text)',
-                  fontFamily: 'Syne', fontWeight: 600,
-                }}>
-                  {v.type}
-                </span>
-                <span style={{
-                  background: v.weight >= 30 ? '#450a0a' : '#0c1a2e',
-                  color: v.weight >= 30 ? '#f87171' : 'var(--accent)',
-                  padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700,
-                }}>
-                  w:{v.weight}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+      {/* Actions */}
+      <div style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <button className="btn-danger" style={{ ...btn.danger, width: '100%', justifyContent: 'center' }}
+          onClick={() => onTerminate(session)}>
+          Terminate Session
+        </button>
       </div>
-
-      {/* Terminate button */}
-      <button className="btn-danger"
-        style={{ width: '100%', padding: 12 }}
-        onClick={() => onTerminate(session)}>
-        ⚠ Terminate This Session
-      </button>
     </div>
   );
 }
 
-// ── Main AdminPage ────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────
 export default function AdminPage() {
   const { user, logout } = useAuth();
-  const navigate         = useNavigate();
+  const navigate = useNavigate();
 
-  const [tab,     setTab]     = useState('live');   // 'live' | 'exams'
-  const [exams,   setExams]   = useState([]);
-  const [selected,setSelected]= useState(null);
-  const [creating,setCreate]  = useState(false);
-  const [form,    setForm]    = useState({ title:'', duration_minutes:60, description:'' });
-  const [error,   setError]   = useState('');
-  const [confirmTerminate, setConfirmTerminate] = useState(null);
+  const [tab, setTab] = useState('live');
+  const [exams, setExams] = useState([]);
+  const [selected, setSelect] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [creating, setCreate] = useState(false);
+  const [form, setForm] = useState({ title: '', duration_minutes: 60, description: '' });
+  const [formErr, setFormErr] = useState('');
+  const [termConf, setTerm] = useState(null);
+  const [termAll, setTermAll] = useState(false);
 
   const { connected, sessions, summary, lastUpdate, terminateSession } = useAdminSocket();
 
+  const loadExams = () => examAPI.list().then(r => setExams(r.data)).catch(console.error);
+  useEffect(() => { loadExams(); }, []);
+
   useEffect(() => {
-    examAPI.list().then(r => setExams(r.data)).catch(console.error);
-  }, []);
+    if (!selected) return;
+    adminAPI.sessionDetail(selected.session_id).then(r => setDetail(r.data)).catch(console.error);
+  }, [selected?.session_id]);
 
-  const handleTerminate = (session) => setConfirmTerminate(session);
-
-  const confirmAndTerminate = async () => {
-    if (!confirmTerminate) return;
-    try {
-      terminateSession(confirmTerminate.session_id);   // via WS
-      await adminAPI.terminate(confirmTerminate.session_id); // via REST backup
-    } catch (e) {
-      console.error('Terminate failed:', e);
-    }
-    setConfirmTerminate(null);
-    if (selected?.session_id === confirmTerminate.session_id) setSelected(null);
+  const handleTerminate = (s) => setTerm(s);
+  const confirmTerminate = async () => {
+    if (!termConf) return;
+    terminateSession(termConf.session_id);
+    await adminAPI.terminate(termConf.session_id).catch(console.error);
+    setTerm(null);
+    if (selected?.session_id === termConf.session_id) setSelect(null);
   };
-
-  const handleCreateExam = async () => {
-    setError('');
+  const handleTerminateAll = async () => {
+    await adminAPI.terminateAll().catch(console.error);
+    setTermAll(false);
+  };
+  const handleCreate = async () => {
+    setFormErr('');
     try {
       await examAPI.create(form);
-      setForm({ title:'', duration_minutes:60, description:'' });
+      setForm({ title: '', duration_minutes: 60, description: '' });
       setCreate(false);
-      const res = await examAPI.list();
-      setExams(res.data);
-    } catch (e) {
-      setError(e.response?.data?.detail || 'Failed to create exam');
-    }
+      loadExams();
+    } catch (e) { setFormErr(e.response?.data?.detail || 'Failed'); }
+  };
+  const handleStatusChange = (id, status) =>
+    adminAPI.updateExamStatus(id, status).then(loadExams).catch(console.error);
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete this exam?')) return;
+    await adminAPI.deleteExam(id).then(loadExams).catch(e => alert(e.response?.data?.detail || 'Delete failed'));
   };
 
-  // Sort sessions by risk score descending
-  const sortedSessions = [...sessions].sort((a, b) => b.risk_score - a.risk_score);
+  const sorted = [...sessions].sort((a, b) => b.risk_score - a.risk_score);
+  const SUMMARY_COLS = [
+    { l: 'Active', v: summary?.total_active || 0, col: colors.accent },
+    { l: 'Safe', v: summary?.safe || 0, col: colors.successMid },
+    { l: 'Warning', v: summary?.warning || 0, col: colors.warningMid },
+    { l: 'High', v: summary?.high_risk || 0, col: colors.dangerMid },
+    { l: 'Critical', v: summary?.critical || 0, col: colors.critical },
+  ];
 
   return (
-    <div style={{ minHeight:'100vh', background:'var(--bg)', display:'flex', flexDirection:'column' }}>
-      <style>{`
-        @keyframes pulse-border {
-          0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}
-          50%{box-shadow:0 0 0 4px rgba(239,68,68,0.2)}
-        }
-      `}</style>
-
+    <div style={{ minHeight: '100vh', background: colors.gray50, fontFamily: fonts.ui }}>
       {/* Navbar */}
-      <nav style={{
-        display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'14px 24px', borderBottom:'1px solid var(--border)',
-        background:'var(--bg2)', position:'sticky', top:0, zIndex:50,
-      }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <span style={{ fontSize:18 }}>🔒</span>
-          <span style={{ fontFamily:'Syne', fontWeight:700, fontSize:16 }}>ProctorAI</span>
-          <span style={{
-            background:'#1e3a5f', color:'var(--accent)', borderRadius:4,
-            padding:'2px 8px', fontSize:10, fontFamily:'Syne', fontWeight:700,
-          }}>ADMIN</span>
+      <nav style={nav.root}>
+        <div style={nav.brand}>
+          <div style={nav.brandLogo}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L4 6v6c0 5.5 3.6 10.3 8 12 4.4-1.7 8-6.5 8-12V6L12 2z" fill="white" opacity=".9" />
+            </svg>
+          </div>
+          <span style={nav.brandName}>ProctorAI</span>
+          <span style={{ ...badge.base, ...badge.admin }}>Admin</span>
         </div>
-
-        {/* WS status */}
-        <div style={{ display:'flex', alignItems:'center', gap:6,
-          background: connected ? '#052e16' : '#1c0a03',
-          border:`1px solid ${connected ? '#14532d' : '#78350f'}`,
-          borderRadius:20, padding:'3px 12px', fontSize:11,
-          color: connected ? 'var(--safe)' : 'var(--warn)',
-        }}>
-          <span style={{ animation:'pulse 2s infinite' }}>●</span>
-          {connected ? 'Live monitoring' : 'Reconnecting...'}
-          {lastUpdate && <span style={{ color:'var(--muted)', marginLeft:4 }}>
-            {lastUpdate.toLocaleTimeString()}
-          </span>}
-        </div>
-
-        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-          <span style={{ color:'var(--muted)', fontSize:12 }}>{user?.email}</span>
-          <button className="btn-ghost" onClick={logout}
-            style={{ fontSize:12, padding:'6px 14px' }}>Logout</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={statusPill(connected)}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected ? colors.successMid : colors.dangerMid, display: 'inline-block', animation: connected ? 'none' : 'pulse 1.5s infinite' }} />
+            {connected ? 'Live' : 'Offline'}
+            {lastUpdate && <span style={{ color: colors.gray400, marginLeft: '4px', fontFamily: fonts.mono, fontSize: '10px' }}>{lastUpdate.toLocaleTimeString()}</span>}
+          </div>
+          <span style={{ fontSize: '13px', color: colors.gray500 }}>{user?.email}</span>
+          <button className="btn-ghost" style={btn.ghost} onClick={logout}>Sign out</button>
         </div>
       </nav>
 
       {/* Summary strip */}
-      {summary && (
-        <div style={{
-          display:'grid', gridTemplateColumns:'repeat(5,1fr)',
-          background:'var(--bg2)', borderBottom:'1px solid var(--border)',
-          padding:'10px 24px', gap:12,
-        }}>
-          {[
-            { label:'Active',   val:summary.total_active, color:'var(--accent)' },
-            { label:'Safe',     val:summary.safe,         color:'var(--safe)'   },
-            { label:'Warning',  val:summary.warning,      color:'var(--warn)'   },
-            { label:'High',     val:summary.high_risk,    color:'var(--high)'   },
-            { label:'Critical', val:summary.critical,     color:'var(--critical)'},
-          ].map(({ label, val, color }) => (
-            <div key={label} style={{ textAlign:'center' }}>
-              <div style={{ fontFamily:'Syne', fontWeight:800, fontSize:22, color }}>
-                {val}
-              </div>
-              <div style={{ color:'var(--muted)', fontSize:10 }}>{label}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={S.summaryStrip}>
+        {SUMMARY_COLS.map(({ l, v, col }) => (
+          <div key={l} style={S.summaryCell}>
+            <div style={S.summaryVal(col)}>{v}</div>
+            <div style={S.summaryLbl}>{l}</div>
+          </div>
+        ))}
+      </div>
 
-      {/* Tabs */}
-      <div style={{
-        display:'flex', gap:4, padding:'12px 24px 0',
-        borderBottom:'1px solid var(--border)', background:'var(--bg2)',
-      }}>
-        {[['live','🔴 Live Sessions'],['exams','📋 Exams']].map(([t, label]) => (
-          <button key={t} onClick={() => setTab(t)}
-            style={{
-              background:'transparent', border:'none',
-              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-              color: tab === t ? 'var(--text)' : 'var(--muted)',
-              padding:'8px 16px', fontSize:13, fontFamily:'Syne', fontWeight:600,
-              cursor:'pointer', borderRadius:0, transition:'all 0.2s',
-            }}>
-            {label}
+      {/* Tab bar */}
+      <div style={S.tabBar}>
+        {[['live', 'Live Sessions'], ['exams', 'Exam Management']].map(([t, l]) => (
+          <button key={t} style={S.tabBtn(tab === t)} onClick={() => setTab(t)}>
+            {l}
             {t === 'live' && sessions.length > 0 && (
-              <span style={{
-                marginLeft:6, background:'var(--accent)', color:'white',
-                borderRadius:'50%', width:18, height:18, fontSize:10,
-                display:'inline-flex', alignItems:'center', justifyContent:'center',
-              }}>
+              <span style={{ background: colors.dangerMid, color: '#fff', borderRadius: '99px', padding: '1px 6px', fontSize: '10px', fontWeight: 700 }}>
                 {sessions.length}
               </span>
             )}
@@ -423,190 +345,153 @@ export default function AdminPage() {
       </div>
 
       {/* Content */}
-      <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+      <div style={{ display: 'flex', height: 'calc(100vh - 153px)', overflow: 'hidden' }}>
 
-        {/* ── LIVE TAB ── */}
+        {/* Live tab */}
         {tab === 'live' && (
-          <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
-            {/* Session grid */}
+          <>
+            {/* Terminate all */}
+            {sessions.length > 0 && (
+              <div style={{ position: 'absolute', top: '8px', right: '16px', zIndex: 10 }}>
+                <button className="btn-danger" style={{ ...btn.danger, fontSize: '12px' }}
+                  onClick={() => setTermAll(true)}>
+                  Terminate All ({sessions.length})
+                </button>
+              </div>
+            )}
+
             <div style={{
-              flex:1, overflowY:'auto', padding:20,
-              display:'grid',
-              gridTemplateColumns: selected
-                ? 'repeat(auto-fill,minmax(280px,1fr))'
-                : 'repeat(auto-fill,minmax(320px,1fr))',
-              gap:16, alignContent:'start',
+              flex: 1, overflowY: 'auto', padding: '20px',
+              display: 'grid',
+              gridTemplateColumns: selected ? 'repeat(auto-fill,minmax(260px,1fr))' : 'repeat(auto-fill,minmax(300px,1fr))',
+              gap: '12px', alignContent: 'start',
             }}>
-              {sortedSessions.length === 0 ? (
-                <div style={{
-                  gridColumn:'1/-1', textAlign:'center',
-                  padding:60, color:'var(--muted)',
-                }}>
-                  <div style={{ fontSize:40, marginBottom:12 }}>📋</div>
-                  <div style={{ fontFamily:'Syne', fontSize:16 }}>
-                    No active exam sessions
-                  </div>
-                  <div style={{ fontSize:12, marginTop:6 }}>
-                    Sessions will appear here when students start exams
-                  </div>
+              {sorted.length === 0 ? (
+                <div style={{ gridColumn: '1/-1', ...card.base, textAlign: 'center', padding: '56px', color: colors.gray400 }}>
+                  <div style={{ fontSize: '13px' }}>No active exam sessions.</div>
                 </div>
-              ) : sortedSessions.map(s => (
-                <SessionCard
-                  key={s.session_id}
-                  session={s}
+              ) : sorted.map(s => (
+                <SessionCard key={s.session_id} session={s}
                   selected={selected?.session_id === s.session_id}
-                  onTerminate={handleTerminate}
-                  onSelect={setSelected}
-                />
+                  onSelect={setSelect} onTerminate={handleTerminate} />
               ))}
             </div>
 
-            {/* Detail panel */}
             {selected && (
-              <div style={{ width:360, flexShrink:0, borderLeft:'1px solid var(--border)', overflow:'hidden' }}>
-                <SessionDetail
-                  session={selected}
-                  onClose={() => setSelected(null)}
-                  onTerminate={handleTerminate}
-                />
-              </div>
+              <DetailPanel session={selected} detail={detail}
+                onClose={() => setSelect(null)} onTerminate={handleTerminate} />
             )}
-          </div>
+          </>
         )}
 
-        {/* ── EXAMS TAB ── */}
+        {/* Exams tab */}
         {tab === 'exams' && (
-          <div style={{ flex:1, overflowY:'auto', padding:24 }}>
-            <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
-              <button className="btn-primary" onClick={() => setCreate(true)}
-                style={{ padding:'10px 20px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
+              <span style={text.sectionTitle}>All Exams</span>
+              <button className="btn-primary" style={btn.primary} onClick={() => setCreate(true)}>
                 + Create Exam
               </button>
             </div>
             {exams.length === 0 ? (
-              <div className="card" style={{ textAlign:'center', padding:48, color:'var(--muted)' }}>
-                <div style={{ fontSize:32, marginBottom:12 }}>📋</div>
-                No exams yet.
-              </div>
+              <div style={{ ...card.base, textAlign: 'center', padding: '48px', color: colors.gray400 }}>No exams created yet.</div>
             ) : (
-              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-                {exams.map(exam => (
-                  <div key={exam.id} className="card" style={{
-                    display:'flex', alignItems:'center', gap:20,
-                  }}>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontFamily:'Syne', fontWeight:700, fontSize:15, marginBottom:4 }}>
-                        {exam.title}
-                      </div>
-                      <div style={{ color:'var(--muted)', fontSize:11, display:'flex', gap:16 }}>
-                        <span>⏱ {exam.duration_minutes} min</span>
-                        <span style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.5 }}>
-                          {exam.id.slice(0,12)}...
-                        </span>
-                      </div>
-                    </div>
-                    <div style={{
-                      padding:'4px 14px', borderRadius:20, fontSize:11,
-                      fontFamily:'Syne', fontWeight:700,
-                      background: exam.status === 'active' ? '#052e16' : '#0c1117',
-                      color: exam.status === 'active' ? 'var(--safe)' : 'var(--muted)',
-                      border:`1px solid ${exam.status === 'active' ? '#14532d' : 'var(--border)'}`,
-                    }}>
-                      {exam.status}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <table style={table.root}>
+                <thead>
+                  <tr>
+                    {['Title', 'Duration', 'Status', 'Actions'].map(h => (
+                      <th key={h} style={table.th}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {exams.map(exam => (
+                    <tr key={exam.id}>
+                      <td style={table.td}>
+                        <div style={{ fontWeight: 600, color: colors.gray900 }}>{exam.title}</div>
+                        <div style={{ fontSize: '10px', color: colors.gray400, fontFamily: fonts.mono }}>{exam.id.slice(0, 12)}…</div>
+                      </td>
+                      <td style={{ ...table.td, fontFamily: fonts.mono }}>{exam.duration_minutes}m</td>
+                      <td style={table.td}>
+                        <select value={exam.status}
+                          onChange={e => handleStatusChange(exam.id, e.target.value)}
+                          style={{ fontFamily: fonts.ui, fontSize: '12px', padding: '4px 8px', border: `1px solid ${colors.gray200}`, borderRadius: radius.sm, background: colors.white, color: colors.gray700, cursor: 'pointer' }}>
+                          {['scheduled', 'active', 'completed', 'terminated'].map(s => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td style={table.td}>
+                        <button className="btn-danger" style={{ ...btn.danger, fontSize: '11px', padding: '4px 10px' }}
+                          onClick={() => handleDelete(exam.id)}>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
         )}
       </div>
 
-      {/* Create exam modal */}
+      {/* Create modal */}
       {creating && (
-        <div style={{
-          position:'fixed', inset:0, background:'rgba(0,0,0,0.75)',
-          display:'flex', alignItems:'center', justifyContent:'center', zIndex:100,
-        }} onClick={e => { if (e.target === e.currentTarget) setCreate(false); }}>
-          <div className="card animate-in" style={{ width:'100%', maxWidth:440 }}>
-            <h2 style={{ fontSize:18, marginBottom:20 }}>Create New Exam</h2>
-            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-              <div>
-                <label style={{ color:'var(--muted)', fontSize:11, display:'block', marginBottom:4 }}>
-                  EXAM TITLE *
-                </label>
-                <input placeholder="e.g. Python Programming Midterm"
-                  value={form.title}
-                  onChange={e => setForm(p => ({ ...p, title: e.target.value }))} autoFocus/>
+        <div style={modal.overlay} onClick={e => e.target === e.currentTarget && setCreate(false)}>
+          <div style={modal.panel} className="animate-fade-up">
+            <h3 style={{ ...text.cardTitle, marginBottom: '4px' }}>Create New Exam</h3>
+            <p style={{ ...text.body, marginBottom: '20px' }}>Students will see this in their dashboard.</p>
+            {[['Title', 'title', 'text', 'e.g. Python Midterm'], ['Duration (minutes)', 'duration_minutes', 'number', '60'], ['Description', 'description', 'text', 'Optional']].map(([l, k, t, ph]) => (
+              <div key={k} style={{ marginBottom: '14px' }}>
+                <label style={text.sectionTitle}>{l}</label>
+                <div style={{ height: '4px' }} />
+                <input type={t} placeholder={ph} value={form[k]}
+                  onChange={e => setForm(p => ({ ...p, [k]: t === 'number' ? parseInt(e.target.value) || 60 : e.target.value }))}
+                  style={{ fontFamily: fonts.ui, fontSize: '14px', background: colors.white, border: `1px solid ${colors.gray300}`, borderRadius: radius.md, color: colors.gray900, padding: '9px 12px', width: '100%', outline: 'none' }} />
               </div>
-              <div>
-                <label style={{ color:'var(--muted)', fontSize:11, display:'block', marginBottom:4 }}>
-                  DURATION (minutes)
-                </label>
-                <input type="number" min={5} max={300}
-                  value={form.duration_minutes}
-                  onChange={e => setForm(p => ({ ...p, duration_minutes: parseInt(e.target.value)||60 }))}/>
-              </div>
-              <div>
-                <label style={{ color:'var(--muted)', fontSize:11, display:'block', marginBottom:4 }}>
-                  DESCRIPTION (optional)
-                </label>
-                <input placeholder="Brief instructions"
-                  value={form.description}
-                  onChange={e => setForm(p => ({ ...p, description: e.target.value }))}/>
-              </div>
-              {error && (
-                <div style={{ background:'#1f0a0a', border:'1px solid #7f1d1d', borderRadius:8, padding:10, color:'#f87171', fontSize:12 }}>
-                  {error}
-                </div>
-              )}
-              <div style={{ display:'flex', gap:10, marginTop:4 }}>
-                <button className="btn-ghost" style={{ flex:1 }}
-                  onClick={() => { setCreate(false); setError(''); }}>
-                  Cancel
-                </button>
-                <button className="btn-primary" style={{ flex:2, padding:11 }}
-                  onClick={handleCreateExam} disabled={!form.title.trim()}>
-                  Create Exam →
-                </button>
-              </div>
+            ))}
+            {formErr && <div style={{ background: colors.dangerLight, border: `1px solid ${colors.dangerBorder}`, borderRadius: radius.md, padding: '10px 14px', color: colors.dangerMid, fontSize: '13px', marginBottom: '14px' }}>{formErr}</div>}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+              <button className="btn-secondary" style={{ ...btn.secondary, flex: 1 }} onClick={() => { setCreate(false); setFormErr(''); }}>Cancel</button>
+              <button className="btn-primary" style={{ ...btn.primary, flex: 2 }} onClick={handleCreate} disabled={!form.title.trim()}>Create Exam</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Terminate confirm modal */}
-      {confirmTerminate && (
-        <div style={{
-          position:'fixed', inset:0, background:'rgba(0,0,0,0.8)',
-          display:'flex', alignItems:'center', justifyContent:'center', zIndex:200,
-        }}>
-          <div className="card animate-in" style={{
-            width:'100%', maxWidth:400, border:'1px solid #7f1d1d',
-          }}>
-            <div style={{ fontSize:32, marginBottom:12, textAlign:'center' }}>⚠</div>
-            <h2 style={{ fontSize:18, textAlign:'center', marginBottom:8, color:'var(--high)' }}>
-              Terminate Exam Session?
-            </h2>
-            <p style={{ color:'var(--muted)', fontSize:13, textAlign:'center', marginBottom:8 }}>
-              <strong style={{ color:'var(--text)' }}>{confirmTerminate.user_name}</strong>
-              <br/>
-              {confirmTerminate.exam_title}
+      {/* Terminate confirm */}
+      {termConf && (
+        <div style={modal.overlay}>
+          <div style={modal.panel} className="animate-fade-up">
+            <h3 style={{ ...text.cardTitle, color: colors.dangerMid, marginBottom: '8px' }}>Terminate Session?</h3>
+            <p style={{ ...text.body, marginBottom: '6px' }}>
+              <strong style={{ color: colors.gray900 }}>{termConf.user_name}</strong> — {termConf.exam_title}
             </p>
-            <p style={{ color:'var(--muted)', fontSize:12, textAlign:'center', marginBottom:24, lineHeight:1.6 }}>
-              Current risk score: <strong style={{ color:LEVEL[confirmTerminate.risk_level]?.color }}>
-                {confirmTerminate.risk_score.toFixed(1)}
-              </strong>
-              <br/>This action cannot be undone.
+            <p style={{ ...text.caption, marginBottom: '24px' }}>
+              Score: {termConf.risk_score.toFixed(1)} · {termConf.violation_count} violations. This cannot be undone.
             </p>
-            <div style={{ display:'flex', gap:10 }}>
-              <button className="btn-ghost" style={{ flex:1 }}
-                onClick={() => setConfirmTerminate(null)}>
-                Cancel
-              </button>
-              <button className="btn-danger" style={{ flex:2, padding:12 }}
-                onClick={confirmAndTerminate}>
-                Yes, Terminate Session
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="btn-secondary" style={{ ...btn.secondary, flex: 1 }} onClick={() => setTerm(null)}>Cancel</button>
+              <button className="btn-danger" style={{ ...btn.danger, flex: 2, justifyContent: 'center' }} onClick={confirmTerminate}>Terminate</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Terminate all confirm */}
+      {termAll && (
+        <div style={modal.overlay}>
+          <div style={modal.panel} className="animate-fade-up">
+            <h3 style={{ ...text.cardTitle, color: colors.dangerMid, marginBottom: '8px' }}>Terminate All Sessions?</h3>
+            <p style={{ ...text.body, marginBottom: '6px' }}>
+              This will immediately end <strong style={{ color: colors.gray900 }}>{sessions.length}</strong> active session(s).
+            </p>
+            <p style={{ ...text.caption, marginBottom: '24px' }}>All candidates will be notified. This cannot be undone.</p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="btn-secondary" style={{ ...btn.secondary, flex: 1 }} onClick={() => setTermAll(false)}>Cancel</button>
+              <button className="btn-danger" style={{ ...btn.danger, flex: 2, justifyContent: 'center' }} onClick={handleTerminateAll}>
+                Terminate All {sessions.length} Sessions
               </button>
             </div>
           </div>

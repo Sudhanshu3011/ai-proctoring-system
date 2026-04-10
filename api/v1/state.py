@@ -14,13 +14,17 @@ Import pattern — use this in ALL files that need scorers/workers:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ai_engine.risk_engine.scoring import RiskScorer
-    from workers.video_worker          import VideoWorker
+    from ai_engine.risk_engine.scoring      import RiskScorer
+    from workers.video_worker               import VideoWorker
+    from ai_engine.gaze_module.gaze_tracker import GazeTracker
+   
 
 # ── In-memory session state ───────────────────────────────────────
 # Keyed by session_id (UUID string)
 # Lives for the duration of an active exam session
 # Cleared in exam.py _close_session() when exam ends
 
-_active_scorers: dict[str, "RiskScorer"]  = {}
-_active_workers: dict[str, "VideoWorker"] = {}
+
+_active_scorers      : dict[str, "RiskScorer"]       = {}
+_active_workers      : dict[str, "VideoWorker"]      = {}
+_active_gaze_trackers: dict[str, "GazeTracker"]      = {}

@@ -13,19 +13,23 @@ Exam Management Endpoints:
 import logging
 from datetime import datetime, timezone
 from fastapi  import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from requests import session
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing   import Optional
 
 from core.security import get_current_user_payload, require_role
+from db import session
 from db.session    import get_db, SessionLocal
 from db.models     import (
     User, Exam, ExamSession, RiskScore, Violation,
     ExamStatus, SessionStatus, RiskLevel, UserRole,
 )
+from services.alert_service import maybe_alert
+from ai_engine.risk_engine.integrity_scorer import integrity_scorer
 
 # ── Shared state (no circular import) ────────────────────────────
-from api.v1.state import _active_scorers, _active_workers
+from api.v1.state import _active_scorers, _active_workers, _active_gaze_trackers
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/exams", tags=["Exam Management"])
@@ -69,6 +73,18 @@ class SubmitExamResponse(BaseModel):
     risk_level:   str
     submitted_at: str
 
+class RoomScanRequest(BaseModel):
+    frames    : list[str] = Field(..., min_length=5, description="Base64 JPEG frames")
+    session_id: str
+ 
+ 
+class RoomScanResponse(BaseModel):
+    passed          : bool
+    scan_duration_s : float
+    frames_analysed : int
+    findings        : list
+    overall_message : str
+ 
 
 # ─────────────────────────────────────────────
 #  POST /exams/create  (admin only)
@@ -230,6 +246,7 @@ def start_exam(
         scorer     = scorer,
         db_session = worker_db,
     )
+
     _active_workers[session.id] = worker
     background_tasks.add_task(worker.start)
 
@@ -296,6 +313,109 @@ def terminate_exam(
 
     return _close_session(session, "TERMINATED", db)
 
+@router.post(
+    "/{exam_id}/room-scan",
+    response_model=RoomScanResponse,
+    summary="Analyse pre-exam room scan frames",
+)
+def room_scan(
+    exam_id    : str,
+    payload    : RoomScanRequest,
+    token_data : dict    = Depends(get_current_user_payload),
+    db         : Session = Depends(get_db),
+):
+    """
+    Called by RoomScanPage.js after the 15-second camera sweep.
+    Decodes all frames, runs RoomScanner, returns pass/fail + findings.
+ 
+    The session must exist and be ACTIVE (was just started by /start).
+    """
+    import base64
+    import numpy as np
+    import cv2
+    from ai_engine.room_module.room_scan import room_scanner
+ 
+    # Verify session belongs to this user
+    user = db.query(User).filter(User.email == token_data["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+ 
+    session = db.query(ExamSession).filter(
+        ExamSession.id      == payload.session_id,
+        ExamSession.exam_id == exam_id,
+        ExamSession.user_id == user.id,
+        ExamSession.status  == SessionStatus.ACTIVE,
+    ).first()
+    if not session:
+        raise HTTPException(404, "Active session not found for this exam and user")
+ 
+    # Decode all frames
+    frames = []
+    for i, b64 in enumerate(payload.frames):
+        try:
+            img_bytes = base64.b64decode(b64)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frames.append(frame)
+        except Exception as e:
+            logger.debug(f"Room scan frame {i} decode error: {e}")
+ 
+    if len(frames) < 5:
+        return RoomScanResponse(
+            passed          = False,
+            scan_duration_s = 0.0,
+            frames_analysed = len(frames),
+            findings        = [],
+            overall_message = (
+                f"Only {len(frames)} frames decoded. "
+                "Ensure your camera is working and try again."
+            ),
+        )
+ 
+    # Run analysis
+    try:
+        result = room_scanner.analyse(frames)
+    except Exception as e:
+        logger.error(f"Room scan analysis error: {e}")
+        # Fail open — don't block the exam if analyser crashes
+        return RoomScanResponse(
+            passed          = True,
+            scan_duration_s = 0.0,
+            frames_analysed = len(frames),
+            findings        = [],
+            overall_message = "Room scan could not be completed. Proceeding to exam.",
+        )
+ 
+    # Persist the room scan result on the session (optional — if model has field)
+    try:
+        session.room_scan_passed = result.passed
+        db.commit()
+    except Exception:
+        pass  # field may not exist — non-critical
+ 
+    logger.info(
+        f"Room scan | session={payload.session_id[:8]} | "
+        f"passed={result.passed} | findings={len(result.findings)} | "
+        f"frames={len(frames)}"
+    )
+ 
+    return RoomScanResponse(
+        passed          = bool(result.passed),
+        scan_duration_s = float(result.scan_duration_s),
+        frames_analysed = int(result.frames_analysed),
+        findings        = [
+            {
+                "finding_type": str(f.finding_type),
+                "severity"    : str(f.severity),
+                "message"     : str(f.message),
+                "confidence"  : float(f.confidence),
+            }
+            for f in result.findings
+        ],
+        overall_message = str(result.overall_message),
+    )
+ 
 
 # ─────────────────────────────────────────────
 #  Internal: close session
@@ -308,45 +428,128 @@ def _close_session(
     """
     Shared by submit, terminate, admin terminate, and auto-terminate.
     Stops the worker, finalises the score, generates the report.
+    Variables user, exam, violations_list etc. are now properly
+    fetched from the DB before being used.
     """
     now = datetime.now(timezone.utc)
-
-    # Stop VideoWorker (also closes its own DB session)
+ 
+    # ── Stop worker ───────────────────────────────────────────────
     worker = _active_workers.pop(session.id, None)
     if worker:
         worker.stop()
-
-    # Final score
+ 
+    # ── Final score ───────────────────────────────────────────────
     scorer      = _active_scorers.pop(session.id, None)
-    final_score = scorer.current_score() if scorer else 0.0
-    final_level = scorer.current_level() if scorer else "SAFE"
-
-    # Close face recognizer session
+    final_score = float(scorer.current_score()) if scorer else 0.0
+    final_level = str(scorer.current_level())   if scorer else "SAFE"
+ 
+    # ── End face recognizer session ───────────────────────────────
     try:
         from ai_engine.face_module.recognizer import recognizer
         recognizer.end_session(session.id)
     except Exception as e:
         logger.debug(f"Recognizer end_session: {e}")
-
-    # Update session in DB
+ 
+    # ── Update DB ─────────────────────────────────────────────────
     session.status       = (
-        SessionStatus.COMPLETED
-        if reason == "COMPLETED"
+        SessionStatus.COMPLETED if reason == "COMPLETED"
         else SessionStatus.TERMINATED
     )
     session.submitted_at = now
-
-    # Update RiskScore
+ 
     risk = db.query(RiskScore).filter(
         RiskScore.session_id == session.id
     ).first()
     if risk:
-        risk.current_score = final_score
+        risk.current_score = float(final_score)
         risk.risk_level    = RiskLevel(final_level)
-
+ 
     db.commit()
-
-    # Auto-generate report (non-blocking — failure doesn't break submit)
+ 
+    # ── Fetch user + exam for alert / integrity ───────────────────
+    #  FIX: user and exam were used below but never fetched
+    user = db.query(User).filter(User.id == session.user_id).first()
+    exam = db.query(Exam).filter(Exam.id == session.exam_id).first()
+ 
+    # ── Alert service ─────────────────────────────────────────────
+    if user and exam:
+        try:
+            maybe_alert(
+                session_id  = session.id,
+                user_name   = user.full_name,
+                user_email  = user.email,
+                exam_title  = exam.title,
+                risk_score  = final_score,
+                risk_level  = final_level,
+                alert_type  = "EXAM_COMPLETED" if reason == "COMPLETED" else "SESSION_TERMINATED",
+                detail      = f"Session ended with risk score {final_score:.1f}",
+            )
+        except Exception as e:
+            logger.debug(f"Alert failed (non-critical): {e}")
+ 
+    # ── Integrity assessment ──────────────────────────────────────
+    #  FIX: violations_list, gaze_tracker, reverify_count etc. were
+    #  undefined — fetch violations from DB, pop gaze tracker safely
+    try:
+        from api.v1.state import _active_gaze_trackers  # may not exist yet
+    except ImportError:
+        _active_gaze_trackers = {}
+ 
+    try:
+        violations_list = db.query(Violation).filter(
+            Violation.session_id == session.id
+        ).all()
+ 
+        gaze_tracker    = _active_gaze_trackers.pop(session.id, None)
+ 
+        # Count specific violation types from DB rows
+        vtype_counts = {}
+        for v in violations_list:
+            k = v.violation_type.value if hasattr(v.violation_type, 'value') else str(v.violation_type)
+            vtype_counts[k] = vtype_counts.get(k, 0) + 1
+ 
+        duration_secs = (
+            (now - session.started_at).total_seconds()
+            if session.started_at else 0
+        )
+        # Handle timezone-naive started_at
+        if session.started_at and session.started_at.tzinfo is None:
+            from datetime import timezone as tz
+            started = session.started_at.replace(tzinfo=tz.utc)
+            duration_secs = (now - started).total_seconds()
+ 
+        assessment = integrity_scorer.assess({
+            "session_id"          : session.id,
+            "duration_seconds"    : float(duration_secs),
+            "violations"          : [
+                {"violation_type": v.violation_type.value if hasattr(v.violation_type,'value') else str(v.violation_type),
+                 "weight": v.weight, "confidence": float(v.confidence or 0)}
+                for v in violations_list
+            ],
+            "peak_risk_score"     : float(final_score),
+            "final_risk_score"    : float(final_score),
+            "face_verify_score"   : float(getattr(session, 'face_verify_score', None) or 1.0),
+            "gaze_summary"        : gaze_tracker.get_session_summary().to_dict() if gaze_tracker else {},
+            "reverify_failures"   : int(vtype_counts.get("FACE_MISMATCH", 0)),
+            "tab_switches"        : int(vtype_counts.get("TAB_SWITCH", 0)),
+            "phone_detected_count": int(vtype_counts.get("PHONE_DETECTED", 0)),
+            "speech_count"        : int(vtype_counts.get("SPEECH_BURST", 0) + vtype_counts.get("SUSTAINED_SPEECH", 0)),
+            "multi_speaker_count" : int(vtype_counts.get("MULTI_SPEAKER", 0)),
+            "was_terminated"      : reason == "TERMINATED",
+        })
+ 
+        # Store on session if model supports it (graceful — field may not exist)
+        try:
+            import json
+            session.integrity_assessment = json.dumps(assessment.to_dict())
+            db.commit()
+        except Exception:
+            pass
+ 
+    except Exception as e:
+        logger.error(f"Integrity assessment failed (non-critical): {e}")
+ 
+    # ── Auto-generate report ──────────────────────────────────────
     try:
         from services.report_services import report_service
         from api.v1.reports          import _build_session_data
@@ -355,15 +558,13 @@ def _close_session(
         logger.info(f"Report generated | session={session.id}")
     except Exception as e:
         logger.error(f"Report generation failed (non-critical): {e}")
-
-    logger.info(
-        f"Session {reason} | id={session.id} | "
-        f"score={final_score} level={final_level}"
-    )
+ 
+    logger.info(f"Session {reason} | id={session.id} | score={final_score} | level={final_level}")
+ 
     return SubmitExamResponse(
         session_id   = session.id,
         message      = f"Exam {reason.lower()}.",
-        final_score  = final_score,
-        risk_level   = final_level,
+        final_score  = float(final_score),
+        risk_level   = str(final_level),
         submitted_at = now.isoformat(),
     )

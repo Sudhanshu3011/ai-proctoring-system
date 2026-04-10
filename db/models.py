@@ -77,6 +77,10 @@ class ViolationType(str, enum.Enum):
     WINDOW_BLUR   = "WINDOW_BLUR"
     FULLSCREEN_EXIT = "FULLSCREEN_EXIT"
     COPY_PASTE    = "COPY_PASTE"
+    #Liveness module
+    LIVENESS_NO_BLINK    = "LIVENESS_NO_BLINK"
+    LIVENESS_HEAD_FROZEN = "LIVENESS_HEAD_FROZEN"
+    LIVENESS_STATIC_FRAME= "LIVENESS_STATIC_FRAME"
 
 
 class RiskLevel(str, enum.Enum):

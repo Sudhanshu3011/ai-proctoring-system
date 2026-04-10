@@ -464,18 +464,3 @@ def get_liveness_checker() -> LivenessChecker:
     if _checker_instance is None:
         _checker_instance = LivenessChecker()
     return _checker_instance
-
-if __name__ == "__main__":
-    # Quick test with sample frames (for development)
-    import os
-    test_dir = os.path.join(os.path.dirname(__file__), "test_frames")
-    frames = []
-    for fname in sorted(os.listdir(test_dir)):
-        if fname.endswith(".jpg"):
-            path = os.path.join(test_dir, fname)
-            frame = cv2.imread(path)
-            frames.append(frame)
-
-    checker = get_liveness_checker()
-    result  = checker.check(frames, fps=8.0)
-    print(result)

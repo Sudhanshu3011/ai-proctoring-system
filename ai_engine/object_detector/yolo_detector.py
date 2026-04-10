@@ -183,13 +183,10 @@ class ObjectDetector:
         self,
         model_path:   str   = MODEL_PATH,
         default_conf: float = 0.50,
-        person_conf:  float = 0.30,
-        # phone_conf:   float = 0.65, 
+        person_conf:  float = 0.40,
         phone_conf:   float = 0.60,
-        # book_conf:    float = 0.70,
-        book_conf:  float=0.80,
-        # audio_conf:   float = 0.41,
-        audio_conf: float=0.50,
+        book_conf:  float=0.70,
+        audio_conf: float=0.50,  # headphones and earbuds often have lower confidence, so a lower threshold can help catch more without too many false positives 
         save_screenshots: bool  = True,
         screenshot_dir:   str   = "storage/screenshots/objects",
     ):

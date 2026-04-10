@@ -52,7 +52,7 @@ from core.security import get_current_user_payload, require_role
 from db.session    import get_db
 from db.models     import (
     ExamSession, User, Exam, Violation, RiskScore,
-    SessionStatus, RiskLevel,
+    SessionStatus, RiskLevel,ExamStatus
 )
 
 logger         = logging.getLogger(__name__)
@@ -60,11 +60,7 @@ router         = APIRouter(prefix="/admin", tags=["Admin"])
 admin_ws_router = APIRouter(tags=["Admin WebSocket"])
 
 # ── Import active scorers from state ──────────────────────────────
-try:
-    from api.v1.state import _active_scorers
-except ImportError:
-    from api.v1.exam  import _active_scorers
-
+from api.v1.state import _active_scorers
 
 # ─────────────────────────────────────────────
 #  Helper — build live session dict
@@ -237,6 +233,118 @@ def admin_terminate(
     )
     return {"message": "Session terminated by admin", **result.model_dump()}
 
+# ─────────────────────────────────────────────
+#  POST /admin/terminate-all
+# ─────────────────────────────────────────────
+
+@router.post("/terminate-all", summary="#11 Terminate ALL active sessions")
+def terminate_all_sessions(
+    token_data : dict    = Depends(require_role("admin")),
+    db         : Session = Depends(get_db),
+):
+    """
+    Terminate every active exam session in one call.
+    Used for emergency lockdown or end-of-exam-period actions.
+    """
+    active = db.query(ExamSession).filter(
+        ExamSession.status == SessionStatus.ACTIVE
+    ).all()
+
+    if not active:
+        return {"message": "No active sessions to terminate", "terminated": 0}
+
+    terminated_ids = []
+    from api.v1.exam import _close_session
+    for session in active:
+        try:
+            _close_session(session, "TERMINATED", db)
+            terminated_ids.append(session.id)
+        except Exception as e:
+            logger.error(f"Failed to terminate session {session.id}: {e}")
+
+    logger.warning(
+        f"Admin TERMINATE ALL | "
+        f"count={len(terminated_ids)} | admin={token_data.get('sub')}"
+    )
+    return {
+        "message"        : f"Terminated {len(terminated_ids)} session(s).",
+        "terminated"     : len(terminated_ids),
+        "terminated_ids" : terminated_ids,
+    }
+
+# ─────────────────────────────────────────────
+#  PATCH /admin/exam/{exam_id}/status
+# ─────────────────────────────────────────────
+
+@router.patch("/exam/{exam_id}/status", summary="#12 Update exam status")
+def update_exam_status(
+    exam_id    : str,
+    new_status : str,   # "scheduled" | "active" | "completed" | "terminated"
+    token_data : dict    = Depends(require_role("admin")),
+    db         : Session = Depends(get_db),
+):
+    """
+    Mark an exam as completed or change its status.
+    Completed exams remain visible in reports.
+    """
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(404, "Exam not found")
+
+    valid = ["scheduled", "active", "completed", "terminated"]
+    if new_status not in valid:
+        raise HTTPException(400, f"Invalid status. Must be one of: {valid}")
+
+    old_status  = exam.status.value
+    exam.status = ExamStatus(new_status)
+    db.commit()
+
+    logger.info(
+        f"Exam status changed | id={exam_id} | "
+        f"{old_status} → {new_status} | admin={token_data.get('sub')}"
+    )
+    return {
+        "message"    : f"Exam status updated to '{new_status}'",
+        "exam_id"    : exam_id,
+        "old_status" : old_status,
+        "new_status" : new_status,
+    }
+
+# ─────────────────────────────────────────────
+#  DELETE /admin/exam/{exam_id}
+# ─────────────────────────────────────────────
+
+@router.delete("/exam/{exam_id}", summary="#12 Delete an exam")
+def delete_exam(
+    exam_id    : str,
+    token_data : dict    = Depends(require_role("admin")),
+    db         : Session = Depends(get_db),
+):
+    """
+    Delete an exam. Only allowed if no active sessions exist.
+    Sessions, violations, and risk scores are CASCADE deleted.
+    """
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(404, "Exam not found")
+
+    active_count = db.query(ExamSession).filter(
+        ExamSession.exam_id == exam_id,
+        ExamSession.status  == SessionStatus.ACTIVE,
+    ).count()
+
+    if active_count > 0:
+        raise HTTPException(
+            409,
+            f"Cannot delete exam with {active_count} active session(s). "
+            "Terminate all sessions first."
+        )
+
+    db.delete(exam)
+    db.commit()
+
+    logger.info(f"Exam deleted | id={exam_id} | admin={token_data.get('sub')}")
+    return {"message": "Exam deleted successfully", "exam_id": exam_id}
 
 # ─────────────────────────────────────────────
 #  WebSocket  /ws/admin/live
@@ -325,3 +433,7 @@ async def admin_live_ws(websocket: WebSocket):
         logger.info(f"Admin WS disconnected | admin={payload.get('sub')}")
     except Exception as e:
         logger.error(f"Admin WS error: {e}", exc_info=True)
+
+
+
+

@@ -21,6 +21,7 @@ from fastapi import (
     APIRouter, Depends, HTTPException,
     WebSocket, WebSocketDisconnect,
 )
+from requests import session
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing   import Optional
@@ -30,6 +31,7 @@ from db.session     import get_db, SessionLocal
 from db.models      import (
     ExamSession, Violation, RiskScore,
     SessionStatus, ViolationType, RiskLevel,
+    User, Exam,
 )
 
 # ── Shared state ─────────────────────────────────────────────────
@@ -39,6 +41,8 @@ from api.v1.state import _active_scorers
 from ai_engine.face_module.detector          import detector as face_detector
 from ai_engine.head_pose_module.pose_estimator import PoseEstimator
 from ai_engine.object_detector.yolo_detector   import ObjectDetector
+from ai_engine.face_module.continuous_liveness import ContinuousLivenessMonitor
+from ai_engine.gaze_module.gaze_tracker         import GazeTracker
 from ai_engine.behaviour_module.anomaly_detector import (
     AnomalyDetector, ViolationEvent,
 )
@@ -53,6 +57,8 @@ _pose_estimators  : dict[str, PoseEstimator]  = {}
 _object_detectors : dict[str, ObjectDetector] = {}
 _anomaly_detectors: dict[str, AnomalyDetector]= {}
 _ws_connections   : dict[str, WebSocket]      = {}
+_liveness_monitors: dict[str, ContinuousLivenessMonitor]= {}
+_gaze_trackers    : dict[str, GazeTracker] = {}  
 
 
 # ─────────────────────────────────────────────
@@ -115,18 +121,26 @@ def _decode_frame(frame_b64: str) -> np.ndarray:
 
 
 def _get_modules(session_id: str):
-    """Lazily create per-session AI instances."""
+
     if session_id not in _pose_estimators:
         _pose_estimators[session_id]   = PoseEstimator()
     if session_id not in _object_detectors:
         _object_detectors[session_id]  = ObjectDetector()
     if session_id not in _anomaly_detectors:
         _anomaly_detectors[session_id] = AnomalyDetector()
+    if session_id not in _liveness_monitors:
+        _liveness_monitors[session_id] = ContinuousLivenessMonitor()
+    if session_id not in _gaze_trackers:
+        _gaze_trackers[session_id] = GazeTracker()
+
     return (
         _pose_estimators[session_id],
         _object_detectors[session_id],
         _anomaly_detectors[session_id],
+        _liveness_monitors[session_id],
+        _gaze_trackers[session_id],
     )
+
 
 
 def _save_violation(
@@ -159,30 +173,70 @@ def _save_violation(
         except Exception:
             pass
 
-
-def _update_risk_db(db: Session, session_id: str, snap: RiskSnapshot):
+def _update_risk_db(db, session_id, snap):
     """Sync current risk score to DB row."""
+    
     risk = db.query(RiskScore).filter(
         RiskScore.session_id == session_id
     ).first()
+    
     if not risk:
         return
+
     try:
-        risk.current_score = snap.current_score
-        risk.risk_level    = RiskLevel(snap.risk_level)
-        risk.face_score    = snap.face_score
-        risk.pose_score    = snap.pose_score
-        risk.object_score  = snap.object_score
-        risk.audio_score   = snap.audio_score
-        risk.browser_score = snap.browser_score
+        previous_level = risk.risk_level
+
+        # Update values
+        risk.current_score = float(snap.current_score)
+        risk.risk_level = (
+            snap.risk_level 
+            if isinstance(snap.risk_level, RiskLevel) 
+            else RiskLevel(snap.risk_level)
+        )
+        risk.face_score    = float(snap.face_score)
+        risk.pose_score    = float(snap.pose_score)
+        risk.object_score  = float(snap.object_score)
+        risk.audio_score   = float(snap.audio_score)
+        risk.browser_score = float(snap.browser_score)
+
         db.commit()
+
+        # Alert ONLY on escalation
+        if previous_level != risk.risk_level and risk.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+
+            session = db.query(ExamSession).filter(
+                ExamSession.id == session_id
+            ).first()
+
+            if not session:
+                return
+
+            user = db.query(User).filter(User.id == session.user_id).first()
+            exam = db.query(Exam).filter(Exam.id == session.exam_id).first()
+
+            if not user or not exam:
+                logger.warning(f"Missing user/exam for session {session_id}")
+                return
+
+            from services.alert_service import maybe_alert
+
+            maybe_alert(
+                session_id = session.id,
+                user_name  = user.full_name,
+                user_email = user.email,
+                exam_title = exam.title,
+                risk_score = risk.current_score,
+                risk_level = risk.risk_level.value,
+                alert_type = "RISK_HIGH",
+                detail     = f"Risk score reached {risk.current_score:.1f}",
+            )
+
     except Exception as e:
         logger.error(f"Risk DB update failed: {e}")
         try:
             db.rollback()
         except Exception:
             pass
-
 
 async def _ws_push(session_id: str, data: dict):
     ws = _ws_connections.get(session_id)
@@ -214,7 +268,7 @@ def process_frame(
     violations : list[str]           = []
     events     : list[ViolationEvent] = []
 
-    pose_est, obj_det, ano_det = _get_modules(sid)
+    pose_est, obj_det, ano_det, liv_mon, gaze_tracker= _get_modules(sid)
 
     # ── Face detection ────────────────────────────────────────────
     try:
@@ -270,6 +324,10 @@ def process_frame(
                     )
             except Exception as e:
                 logger.debug(f"Object detection error: {e}")
+            
+            gaze = gaze_tracker.update(frame)
+            if gaze.region == "OFF_SCREEN":
+                events.append(ViolationEvent("LOOKING_AWAY", time.time(), 8, 0.7, 0.0, "pose"))
 
     except Exception as e:
         logger.debug(f"Face detection error: {e}")
@@ -291,13 +349,12 @@ def process_frame(
     return MonitoringResponse(
         session_id       = sid,
         violations       = violations,
-        risk_score       = snapshot.current_score,
-        risk_level       = snapshot.risk_level,
-        should_warn      = snapshot.should_warn,
-        should_terminate = snapshot.should_terminate,
+        risk_score       = float(snapshot.current_score),
+        risk_level       = str(snapshot.risk_level),
+        should_warn      = bool(snapshot.should_warn),
+        should_terminate = bool(snapshot.should_terminate),
         status           = "TERMINATED" if snapshot.should_terminate else "ACTIVE",
     )
-
 
 # ─────────────────────────────────────────────
 #  POST /monitoring/audio
@@ -315,7 +372,7 @@ def process_audio(
     if not payload.violation_type:
         return {"status": "ok", "message": "No violation"}
 
-    _, _, ano_det = _get_modules(sid)
+    _, _, ano_det, _, _= _get_modules(sid)
     weight = {
         "SPEECH_BURST"    : 10, "SUSTAINED_SPEECH": 20,
         "MULTI_SPEAKER"   : 30, "WHISPER"          : 8,
@@ -338,8 +395,8 @@ def process_audio(
     return {
         "session_id": sid,
         "violation" : payload.violation_type,
-        "risk_score": snapshot.current_score,
-        "risk_level": snapshot.risk_level,
+        "risk_score": float(snapshot.current_score),
+        "risk_level": str(snapshot.risk_level),
     }
 
 
@@ -375,7 +432,7 @@ def browser_event(
     return {
         "session_id": sid,
         "event_type": payload.event_type,
-        "risk_score": new_score,
+        "risk_score": float(new_score),
     }
 
 
@@ -433,7 +490,7 @@ async def websocket_monitor(websocket: WebSocket, session_id: str):
     logger.info(f"WS connected | session={session_id}")
 
     scorer   = _active_scorers.get(session_id)
-    _, _, ano_det = _get_modules(session_id)
+    pose_est, obj_det, ano_det, liv_mon ,gaze_tracker= _get_modules(session_id)
 
     # Use own DB session for WS — request session may expire
     ws_db = SessionLocal()
@@ -456,54 +513,110 @@ async def websocket_monitor(websocket: WebSocket, session_id: str):
 
             # ── FRAME ─────────────────────────────────────────────
             if msg_type == "FRAME" and scorer:
+
                 try:
                     frame     = _decode_frame(msg.get("data", ""))
-                    pose_est  = _pose_estimators.get(session_id)
-                    obj_det   = _object_detectors.get(session_id)
+                    pose_est, obj_det, ano_det, liv_mon , gaze_tracker= _get_modules(session_id)
                     events    = []
 
-                    # Face check
+                    # ── Face detection ────────────────────────────
                     rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                     fd       = face_detector.detect(mp_image)
+
                     if not fd.detections:
-                        events.append(ViolationEvent(
-                            "FACE_ABSENT", time.time(), 10, 1.0, 0.0, "face"
-                        ))
+                        events.append(ViolationEvent("FACE_ABSENT", time.time(), 10, 1.0, 0.0, "face"))
                         _save_violation(ws_db, session_id, "FACE_ABSENT", 10, 1.0)
+                        await websocket.send_json({
+                            "type"       : "VIOLATION_DETAIL",
+                            "vtype"      : "FACE_ABSENT",
+                            "severity"   : "WARNING",
+                            "message"    : "Your face is not visible in the camera frame.",
+                            "action"     : "Please position yourself so your face is clearly visible.",
+                            "confidence" : 1.0,
+                        })
                     elif len(fd.detections) > 1:
-                        events.append(ViolationEvent(
-                            "MULTI_FACE", time.time(), 30, 1.0, 0.0, "face"
-                        ))
+                        events.append(ViolationEvent("MULTI_FACE", time.time(), 30, 1.0, 0.0, "face"))
                         _save_violation(ws_db, session_id, "MULTI_FACE", 30, 1.0)
+                        await websocket.send_json({
+                            "type"       : "VIOLATION_DETAIL",
+                            "vtype"      : "MULTI_FACE",
+                            "severity"   : "HIGH",
+                            "message"    : "Multiple faces detected in camera view.",
+                            "action"     : "Ensure you are alone in the camera frame.",
+                            "confidence" : 1.0,
+                        })
+                    else:
+                        # ── Head pose ─────────────────────────────
+                        if pose_est:
+                            r = pose_est.estimate_pose(frame)
+                            v = pose_est.check_violation(r)
+                            if v:
+                                events.append(ViolationEvent("LOOKING_AWAY", time.time(), 15,
+                                    r.confidence, v.duration_seconds, "pose"))
+                                _save_violation(ws_db, session_id, "LOOKING_AWAY", 15,
+                                    r.confidence, v.duration_seconds)
+                                await websocket.send_json({
+                                    "type"       : "VIOLATION_DETAIL",
+                                    "vtype"      : "LOOKING_AWAY",
+                                    "severity"   : "WARNING",
+                                    "message"    : f"Looking away from screen detected ({v.direction}).",
+                                    "action"     : "Please keep your eyes on the exam screen.",
+                                    "confidence" : round(r.confidence, 2),
+                                })
 
-                    # Pose check
-                    if pose_est:
-                        r  = pose_est.estimate_pose(frame)
-                        v  = pose_est.check_violation(r)
-                        if v:
-                            events.append(ViolationEvent(
-                                "LOOKING_AWAY", time.time(), 15,
-                                r.confidence, v.duration_seconds, "pose",
-                            ))
-                            _save_violation(
-                                ws_db, session_id, "LOOKING_AWAY",
-                                15, r.confidence, v.duration_seconds,
-                            )
+                        # ── Object detection ──────────────────────
+                        if obj_det and int(time.time()) % 3 == 0:
+                            dets = obj_det.detect(frame)
+                            oevs = obj_det.check_violations(dets, frame)
+                            for oe in oevs:
+                                vt = oe.cls.upper() + "_DETECTED"
+                                events.append(ViolationEvent(vt, time.time(),
+                                    oe.weight, oe.confidence, 0.0, "object"))
+                                _save_violation(ws_db, session_id, vt,
+                                    oe.weight, oe.confidence)
+                                labels = {
+                                    "PHONE_DETECTED"    : "Mobile phone",
+                                    "BOOK_DETECTED"     : "Book or notes",
+                                    "HEADPHONE_DETECTED": "Headphones or earbuds",
+                                }
+                                await websocket.send_json({
+                                    "type"       : "VIOLATION_DETAIL",
+                                    "vtype"      : vt,
+                                    "severity"   : "HIGH",
+                                    "message"    : f"{labels.get(vt, 'Prohibited object')} detected in camera view.",
+                                    "action"     : "Remove any prohibited materials from the camera view immediately.",
+                                    "confidence" : round(oe.confidence, 2),
+                                })
 
-                    # Object check (every 3rd second approx)
-                    if obj_det and int(time.time()) % 3 == 0:
-                        dets = obj_det.detect(frame)
-                        oevs = obj_det.check_violations(dets, frame)
-                        for oe in oevs:
-                            vt = oe.cls.upper() + "_DETECTED"
-                            events.append(ViolationEvent(
-                                vt, time.time(), oe.weight, oe.confidence, 0.0, "object"
-                            ))
-                            _save_violation(
-                                ws_db, session_id, vt, oe.weight,
-                                oe.confidence, screenshot=oe.frame_path,
-                            )
+                    # ── Continuous liveness check (multi-frame) ───
+                    liveness_issues = liv_mon.update_frame(frame)
+                    for issue in liveness_issues:
+                        # Map liveness issues to violation events
+                        vtype_map = {
+                            "NO_BLINK"    : ("LIVENESS_NO_BLINK",    8),
+                            "HEAD_FROZEN" : ("LIVENESS_HEAD_FROZEN", 8),
+                            "STATIC_FRAME": ("LIVENESS_STATIC_FRAME",20),
+                        }
+                        vtype, weight = vtype_map.get(issue.issue_type, ("LIVENESS_ISSUE", 8))
+
+                        ano_det.add_event(ViolationEvent(
+                            vtype, time.time(), weight,           
+                            issue.confidence, 0.0, "face",
+                        ))
+
+                        # Send specific liveness message to frontend
+                        await websocket.send_json({
+                            "type"       : "LIVENESS_ISSUE",
+                            "issue_type" : issue.issue_type,
+                            "severity"   : issue.severity,
+                            "message"    : issue.message,
+                            "confidence" : float(issue.confidence),
+                        })
+                        logger.warning(
+                            f"Liveness issue | session={session_id} | "
+                            f"{issue.issue_type} | {issue.message}"
+                        )
 
                     if events:
                         ano_det.add_events(events)

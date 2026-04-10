@@ -73,11 +73,18 @@ VIOLATION_WEIGHTS: dict[str, int] = {
     "WINDOW_BLUR"        : 10,
     "FULLSCREEN_EXIT"    : 15,
     "COPY_PASTE"         : 20,
+    #Liveness issues
+    "LIVENESS_NO_BLINK"      :  8,
+    "LIVENESS_HEAD_FROZEN"   :  8,
+    "LIVENESS_STATIC_FRAME"  : 20,
 }
 
 # Module groupings — for cross-module pattern detection
 MODULE_GROUPS = {
-    "face"    : {"FACE_ABSENT", "FACE_MISMATCH", "MULTI_FACE"},
+    "face"    : {
+                    "FACE_ABSENT", "FACE_MISMATCH", "MULTI_FACE","LIVENESS_NO_BLINK",
+                    "LIVENESS_HEAD_FROZEN","LIVENESS_STATIC_FRAME",        
+                },
     "pose"    : {"LOOKING_AWAY"},
     "object"  : {"PHONE_DETECTED", "BOOK_DETECTED", "HEADPHONE_DETECTED"},
     "audio"   : {"SPEECH_BURST", "SUSTAINED_SPEECH", "MULTI_SPEAKER", "WHISPER"},
@@ -94,21 +101,24 @@ class BehaviorConfig:
 
     # Frequency thresholds — violations per window before anomaly fires
     FREQ_THRESHOLDS: dict[str, int] = {
-        "FACE_ABSENT"        : 5,
-        "LOOKING_AWAY"       : 10,
-        "TAB_SWITCH"         : 3,
-        "WINDOW_BLUR"        : 3,
-        "SPEECH_BURST"       : 4,
-        "PHONE_DETECTED"     : 2,
-        "BOOK_DETECTED"      : 2,
-        "HEADPHONE_DETECTED" : 2,
-        "SUSTAINED_SPEECH"   : 2,
-        "MULTI_SPEAKER"      : 2,
-        "FACE_MISMATCH"      : 1,   # even 1 is serious
-        "MULTI_FACE"         : 2,
-        "FULLSCREEN_EXIT"    : 2,
-        "COPY_PASTE"         : 2,
-        "WHISPER"            : 5,
+        "FACE_ABSENT"            : 5,
+        "LOOKING_AWAY"           : 10,
+        "TAB_SWITCH"             : 3,
+        "WINDOW_BLUR"            : 3,
+        "SPEECH_BURST"           : 4,
+        "PHONE_DETECTED"         : 2,
+        "BOOK_DETECTED"          : 2,
+        "HEADPHONE_DETECTED"     : 2,
+        "SUSTAINED_SPEECH"       : 2,
+        "MULTI_SPEAKER"          : 2,
+        "FACE_MISMATCH"          : 1,   # even 1 is serious
+        "MULTI_FACE"             : 2,
+        "FULLSCREEN_EXIT"        : 2,
+        "COPY_PASTE"             : 2,
+        "WHISPER"                : 5,
+        "LIVENESS_NO_BLINK"      : 3,   # flag if no blink 3 times in window
+        "LIVENESS_HEAD_FROZEN"   : 3,
+        "LIVENESS_STATIC_FRAME"  : 2,   # even 2 static frames is serious
     }
 
     # Co-occurrence window (seconds) — events within this gap count as related
@@ -677,64 +687,3 @@ class AnomalyDetector:
         self._session_total_weight    = 0.0
         self._prev_window_counts.clear()
         logger.info("AnomalyDetector reset.")
-
-
-# ─────────────────────────────────────────────
-#  Module-level singleton
-#  from ai_engine.behavior_module.anomaly_detector import anomaly_detector
-# ─────────────────────────────────────────────
-anomaly_detector = AnomalyDetector()
-
-
-# ─────────────────────────────────────────────
-#  Standalone test
-# ─────────────────────────────────────────────
-if __name__ == "__main__":
-    import random
-
-    print("\n── AnomalyDetector standalone test ─────────────────────")
-    det = AnomalyDetector()
-    now = time.time()
-
-    # Simulate a suspicious exam session
-    sim_events = [
-        # Normal start — occasional look-away
-        ViolationEvent("LOOKING_AWAY",    now - 100, 15, 0.92, 2.1, "pose"),
-        ViolationEvent("LOOKING_AWAY",    now - 90,  15, 0.88, 1.8, "pose"),
-        ViolationEvent("TAB_SWITCH",      now - 85,  20, 1.00, 0.0, "browser"),
-        # Getting suspicious
-        ViolationEvent("LOOKING_AWAY",    now - 70,  15, 0.95, 3.2, "pose"),
-        ViolationEvent("SPEECH_BURST",    now - 65,  10, 0.78, 1.5, "audio"),
-        ViolationEvent("LOOKING_AWAY",    now - 60,  15, 0.91, 2.8, "pose"),
-        # Coordinated cheating attempt
-        ViolationEvent("PHONE_DETECTED",  now - 25,  40, 0.97, 0.0, "object"),
-        ViolationEvent("SUSTAINED_SPEECH",now - 22,  20, 0.85, 4.1, "audio"),
-        ViolationEvent("TAB_SWITCH",      now - 20,  20, 1.00, 0.0, "browser"),
-        ViolationEvent("LOOKING_AWAY",    now - 18,  15, 0.94, 2.5, "pose"),
-        ViolationEvent("PHONE_DETECTED",  now - 15,  40, 0.99, 0.0, "object"),
-        ViolationEvent("MULTI_SPEAKER",   now - 10,  30, 0.82, 0.0, "audio"),
-    ]
-
-    det.add_events(sim_events)
-    report = det.analyze()
-
-    print(f"\n  Events in window  : {report.events_in_window}")
-    print(f"  Active modules    : {report.active_modules_count}")
-    print(f"  Raw score         : {report.raw_behavior_score:.1f}")
-    print(f"  Anomaly multiplier: {report.anomaly_multiplier}x")
-    print(f"  Adjusted score    : {report.adjusted_behavior_score:.1f}")
-    print(f"\n  Flags detected ({len(report.anomaly_flags)}):")
-    for f in report.anomaly_flags:
-        print(f"    [{f.severity:8s}] {f.flag_type} | {f.description}")
-
-    print(f"\n  Module breakdown:")
-    for mod, stats in report.module_stats.items():
-        print(
-            f"    {mod:8s} | count={stats.violation_count:2d} | "
-            f"weight={stats.total_weight:5.1f} | top={stats.most_frequent}"
-        )
-
-    print(f"\n  Frequency anomaly  : {report.has_frequency_anomaly}")
-    print(f"  Co-occurrence      : {report.has_cooccurrence_anomaly}")
-    print(f"  Escalation         : {report.has_escalation}")
-    print("─────────────────────────────────────────────────────────\n")

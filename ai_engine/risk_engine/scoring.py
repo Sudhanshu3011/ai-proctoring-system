@@ -164,26 +164,29 @@ class RiskSnapshot:
     violation_count    : int   = 0
     anomaly_multiplier : float = 1.0
 
+    
+
     def to_dict(self) -> dict:
-        """Serialisable — sent via WebSocket and stored in DB."""
+        """All values cast to Python native types — safe for json.dumps and PostgreSQL."""
         return {
-            "current_score"     : round(self.current_score, 2),
-            "raw_score"         : round(self.raw_score, 2),
-            "cheat_probability" : round(self.cheat_probability, 4),
-            "risk_level"        : self.risk_level,
-            "face_score"        : round(self.face_score, 2),
-            "pose_score"        : round(self.pose_score, 2),
-            "object_score"      : round(self.object_score, 2),
-            "audio_score"       : round(self.audio_score, 2),
-            "browser_score"     : round(self.browser_score, 2),
-            "should_warn"       : self.should_warn,
-            "should_alert_admin": self.should_alert_admin,
-            "should_terminate"  : self.should_terminate,
-            "timestamp"         : self.timestamp,
-            "session_id"        : self.session_id,
-            "violation_count"   : self.violation_count,
-            "anomaly_multiplier": round(self.anomaly_multiplier, 2),
+            "current_score"     : float(self.current_score),
+            "raw_score"         : float(self.raw_score),
+            "cheat_probability" : float(self.cheat_probability),
+            "risk_level"        : str(self.risk_level),
+            "face_score"        : float(self.face_score),
+            "pose_score"        : float(self.pose_score),
+            "object_score"      : float(self.object_score),
+            "audio_score"       : float(self.audio_score),
+            "browser_score"     : float(self.browser_score),
+            "should_warn"       : bool(self.should_warn),       # ← fixes np.bool_
+            "should_alert_admin": bool(self.should_alert_admin),
+            "should_terminate"  : bool(self.should_terminate),
+            "timestamp"         : float(self.timestamp),
+            "session_id"        : str(self.session_id),
+            "violation_count"   : int(self.violation_count),
+            "anomaly_multiplier": float(self.anomaly_multiplier),
         }
+    
 
 
 # ─────────────────────────────────────────────
@@ -511,13 +514,13 @@ class RiskScorer:
     #  Score inspection
     # ─────────────────────────────────────────
     def current_score(self) -> float:
-        return round(self._dynamic_score, 2)
-
+        return float(round(self._dynamic_score, 2))
+    
     def current_level(self) -> str:
-        return self._classify_level(self._dynamic_score)
-
+        return str(self._classify_level(self._dynamic_score))
+    
     def current_probability(self) -> float:
-        return round(self._sigmoid_probability(self._dynamic_score), 4)
+        return float(round(self._sigmoid_probability(self._dynamic_score), 4))
 
     # ─────────────────────────────────────────
     #  Session summary (for report_service.py)

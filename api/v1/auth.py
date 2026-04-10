@@ -22,9 +22,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
 
-from ai_engine.face_module.recognizer import recognizer
+from ai_engine.face_module.recognizer import recognizer,FaceRecognizer
 from ai_engine.face_module.detector import preprocess_face, inception_resnet
-from ai_engine.face_module.liveliness import get_liveness_checker , LivenessResult
+from ai_engine.face_module.liveliness import get_liveness_checker, LivenessResult
 from core.config import settings
 from core.security import (
     hash_password,

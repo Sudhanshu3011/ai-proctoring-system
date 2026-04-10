@@ -5,6 +5,7 @@ Report endpoints:
   GET  /api/v1/reports/{session_id}           → JSON report data
   GET  /api/v1/reports/{session_id}/download  → download PDF file
   POST /api/v1/reports/generate/{session_id}  → manually trigger generation
+  
 """
 
 import os
@@ -120,19 +121,6 @@ def _module_from_type(vtype: str) -> str:
     }
     return mapping.get(vtype, "unknown")
 
-
-# ─────────────────────────────────────────────
-#  GET /reports/{session_id}
-# ─────────────────────────────────────────────
-@router.get("/{session_id}", summary="Get report data as JSON")
-def get_report(
-    session_id : str,
-    token_data : dict    = Depends(get_current_user_payload),
-    db         : Session = Depends(get_db),
-):
-    return _build_session_data(session_id, db)
-
-
 # ─────────────────────────────────────────────
 #  POST /reports/generate/{session_id}
 # ─────────────────────────────────────────────
@@ -158,15 +146,49 @@ def generate_report(
 # ─────────────────────────────────────────────
 #  GET /reports/{session_id}/download
 # ─────────────────────────────────────────────
-@router.get("/{session_id}/download", summary="Download PDF report")
-def download_report(
+"""
+Rules:
+  - Admin: full access — view JSON + download PDF
+  - Student: can view their OWN report JSON only — NO download
+"""
+
+@router.get("/{session_id}", summary="Get report data (student=own only)")
+def get_report(
     session_id : str,
     token_data : dict    = Depends(get_current_user_payload),
     db         : Session = Depends(get_db),
 ):
-    pdf_path = os.path.join(REPORTS_DIR, f"{session_id}.pdf")
+    session = db.query(ExamSession).filter(
+        ExamSession.id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(404, "Session not found")
 
-    # Auto-generate if not exists
+    # Access control — students can only see their own reports
+    role = token_data.get("role", "student")
+    if role != "admin":
+        user = db.query(User).filter(User.email == token_data["sub"]).first()
+        if not user or session.user_id != user.id:
+            raise HTTPException(403, "You can only view your own report.")
+
+    data = _build_session_data(session_id, db)
+    # Students don't receive the download flag
+    if role != "admin":
+        data["can_download"] = False
+    else:
+        data["can_download"] = True
+    return data
+
+# ─────────────────────────────────────────────
+#  GET /reports/{session_id}/download
+# ─────────────────────────────────────────────
+@router.get("/{session_id}/download", summary="Download PDF — admin only")
+def download_report(
+    session_id : str,
+    token_data : dict    = Depends(require_role("admin")),  # ← admin only
+    db         : Session = Depends(get_db),
+):
+    pdf_path = os.path.join(REPORTS_DIR, f"{session_id}.pdf")
     if not os.path.exists(pdf_path):
         try:
             data = _build_session_data(session_id, db)
@@ -175,18 +197,15 @@ def download_report(
             raise HTTPException(500, f"Could not generate report: {e}")
 
     if not os.path.exists(pdf_path):
-        raise HTTPException(404, "Report file not found even after generation attempt")
+        raise HTTPException(404, "Report could not be generated")
 
-    # Read file and return as bytes — avoids FileResponse path issues
     with open(pdf_path, 'rb') as f:
         pdf_bytes = f.read()
 
     return Response(
-        content     = pdf_bytes,
-        media_type  = "application/pdf",
-        headers     = {
-            "Content-Disposition": f'attachment; filename="proctor_report_{session_id[:8]}.pdf"',
-            "Content-Length"     : str(len(pdf_bytes)),
+        content    = pdf_bytes,
+        media_type = "application/pdf",
+        headers    = {
+            "Content-Disposition": f'attachment; filename="report_{session_id[:8]}.pdf"',
         }
     )
-
