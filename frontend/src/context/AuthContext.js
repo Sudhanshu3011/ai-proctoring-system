@@ -5,7 +5,7 @@ import { authAPI } from '../services/api';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user,    setUser]    = useState(null);
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Restore session on page reload
@@ -24,7 +24,7 @@ export function AuthProvider({ children }) {
   const login = async (email, password) => {
     const res = await authAPI.login({ email, password });
     localStorage.setItem('token', res.data.access_token);
-    localStorage.setItem('role',  res.data.role);
+    localStorage.setItem('role', res.data.role);
     const profile = await authAPI.profile();
     setUser(profile.data);
     return res.data;
