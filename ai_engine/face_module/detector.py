@@ -85,21 +85,23 @@ logger.info(f"Landmarker exists   : {os.path.exists(FACE_LANDMARK_MODEL)}")
 
 # Tracks blink state across frames — persists between calls
 _blink_state = {
-    "phase":         "OPEN",     # OPEN → CLOSING → BLINK_CONFIRMED
-    "confirmed":     False,
-    "close_time":    None,
+    "phase": "OPEN",  # OPEN → CLOSING → BLINK_CONFIRMED
+    "confirmed": False,
+    "close_time": None,
 }
 _movement_buffer = []
 
 # BLINK_CLOSE_THRESHOLD = 0.35    # score above this = eye closing
-BLINK_CLOSE_THRESHOLD = 0.40   # score above this = eye closing
+BLINK_CLOSE_THRESHOLD = 0.40  # score above this = eye closing
 # BLINK_OPEN_THRESHOLD  = 0.15    # score below this = eye fully open again
-BLINK_OPEN_THRESHOLD  = 0.12    # score below this = eye fully open again
-BLINK_MAX_DURATION    = 0.4     # seconds — blink must complete within this
-BLINK_SCORE_THRESHOLD  = 0.35    # blendshape score above this = eye closed
+BLINK_OPEN_THRESHOLD = 0.12  # score below this = eye fully open again
+BLINK_MAX_DURATION = 0.4  # seconds — blink must complete within this
+BLINK_SCORE_THRESHOLD = 0.35  # blendshape score above this = eye closed
 # HEAD_MOVE_MIN_PIXELS   = 4       # pixels of nose movement = head moved
-HEAD_MOVE_MIN_PIXELS = 8  # was 4 — increased to reduce false negatives for small head movements
-LIVENESS_TIMEOUT_SEC   = 5       # seconds without confirmed liveness → log error
+HEAD_MOVE_MIN_PIXELS = (
+    8  # was 4 — increased to reduce false negatives for small head movements
+)
+LIVENESS_TIMEOUT_SEC = 5  # seconds without confirmed liveness → log error
 
 
 # ─────────────────────────────────────────────
@@ -115,9 +117,9 @@ logger.info(f"Torch device: {device}")
 
 # ── 1. MediaPipe Face Detector (Tasks API) ────────────────────────
 _detect_options = FaceDetectorOptions(
-    base_options = BaseOptions(model_asset_path=FACE_DETECT_MODEL),
-    running_mode = RunningMode.IMAGE,
-    min_detection_confidence = 0.6,
+    base_options=BaseOptions(model_asset_path=FACE_DETECT_MODEL),
+    running_mode=RunningMode.IMAGE,
+    min_detection_confidence=0.6,
 )
 detector = FaceDetector.create_from_options(_detect_options)
 logger.info("FaceDetector loaded.")
@@ -126,14 +128,14 @@ logger.info("FaceDetector loaded.")
 # Blendshapes give us eyeBlinkLeft / eyeBlinkRight scores (0–1)
 # This replaces the old mp.solutions.face_mesh which is removed in >= 0.10
 _landmark_options = FaceLandmarkerOptions(
-    base_options = BaseOptions(model_asset_path=FACE_LANDMARK_MODEL),
-    running_mode = RunningMode.IMAGE,
-    num_faces    = 1,
-    min_face_detection_confidence = 0.5,
-    min_face_presence_confidence  = 0.5,
-    min_tracking_confidence       = 0.5,
-    output_face_blendshapes       = True,   # ← needed for blink detection
-    output_facial_transformation_matrixes = False,
+    base_options=BaseOptions(model_asset_path=FACE_LANDMARK_MODEL),
+    running_mode=RunningMode.IMAGE,
+    num_faces=1,
+    min_face_detection_confidence=0.5,
+    min_face_presence_confidence=0.5,
+    min_tracking_confidence=0.5,
+    output_face_blendshapes=True,  # ← needed for blink detection
+    output_facial_transformation_matrixes=False,
 )
 landmarker = FaceLandmarker.create_from_options(_landmark_options)
 logger.info("FaceLandmarker (blendshapes) loaded.")
@@ -154,9 +156,9 @@ def preprocess_face(face_img: np.ndarray) -> torch.Tensor:
     face_img = cv2.resize(face_img, (160, 160))
     face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
 
-    face_tensor = torch.from_numpy(face_img).float()   # (H, W, C)
-    face_tensor = face_tensor.permute(2, 0, 1)         # → (C, H, W)
-    face_tensor = face_tensor / 255.0                  # normalize 0–1
+    face_tensor = torch.from_numpy(face_img).float()  # (H, W, C)
+    face_tensor = face_tensor.permute(2, 0, 1)  # → (C, H, W)
+    face_tensor = face_tensor / 255.0  # normalize 0–1
     face_tensor = face_tensor.unsqueeze(0).to(device)  # → (1, C, H, W)
 
     return face_tensor
@@ -186,7 +188,7 @@ def check_liveness(
     Returns:
         (is_live, current_nose_center)
     """
-    rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
     result = landmarker.detect(mp_image)
@@ -197,9 +199,9 @@ def check_liveness(
     # ── Signal 1: Head movement ───────────────────────────────────
     h, w = frame.shape[:2]
     landmarks = result.face_landmarks[0]
-    nose      = landmarks[1]                      # nose tip index
-    cx        = int(nose.x * w)
-    cy        = int(nose.y * h)
+    nose = landmarks[1]  # nose tip index
+    cx = int(nose.x * w)
+    cy = int(nose.y * h)
 
     # moved = True
 
@@ -232,23 +234,23 @@ def check_liveness(
     # A single frame with eyes slightly closed is NOT a blink.
     # We require the complete cycle to confirm liveness.
     blendshapes = result.face_blendshapes[0]
-    blink_left  = 0.0
+    blink_left = 0.0
     blink_right = 0.0
 
     for bs in blendshapes:
         if bs.category_name == "eyeBlinkLeft":
-            blink_left  = bs.score
+            blink_left = bs.score
         elif bs.category_name == "eyeBlinkRight":
             blink_right = bs.score
 
     # Use the higher of the two eyes
     blink_score = max(blink_left, blink_right)
-    now         = time.time()
+    now = time.time()
 
     if _blink_state["phase"] == "OPEN":
         # Waiting for eye to start closing
         if blink_score > BLINK_CLOSE_THRESHOLD:
-            _blink_state["phase"]      = "CLOSING"
+            _blink_state["phase"] = "CLOSING"
             _blink_state["close_time"] = now
             logger.debug(f"Blink started (score={blink_score:.2f})")
 
@@ -263,7 +265,7 @@ def check_liveness(
 
         elif blink_score < BLINK_OPEN_THRESHOLD:
             # Eye closed AND reopened within time window → confirmed blink
-            _blink_state["phase"]     = "OPEN"
+            _blink_state["phase"] = "OPEN"
             _blink_state["confirmed"] = True
             logger.info(f"BLINK CONFIRMED (duration={elapsed:.2f}s)")
 
@@ -322,7 +324,7 @@ def faceDetection() -> dict | None:
     logger.info("Camera opened. Waiting for live face...")
 
     liveness_start = time.time()
-    prev_center    = None
+    prev_center = None
 
     try:
         while True:
@@ -331,7 +333,7 @@ def faceDetection() -> dict | None:
                 logger.error("Failed to read frame from camera.")
                 break
 
-            rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
             result = detector.detect(mp_image)
@@ -367,7 +369,7 @@ def faceDetection() -> dict | None:
             fw = int(bbox.width)
             fh = int(bbox.height)
 
-            face_image = frame[y:y + fh, x:x + fw]
+            face_image = frame[y : y + fh, x : x + fw]
 
             # Validate crop — skip if too small or empty
             if face_image.size == 0 or fw < 40 or fh < 40:
@@ -390,12 +392,10 @@ def faceDetection() -> dict | None:
             logger.info("LIVE FACE CONFIRMED — generating embedding.")
             # Reset blink state for next session
             _blink_state["confirmed"] = False
-            _blink_state["phase"]     = "OPEN"
+            _blink_state["phase"] = "OPEN"
 
             # ── Save face crop as base64 JPEG ─────────────────────
-            pil_img  = PILImage.fromarray(
-                cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-            )
+            pil_img = PILImage.fromarray(cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB))
             buffered = BytesIO()
             pil_img.save(buffered, format="JPEG")
             face_base64 = base64.b64encode(buffered.getvalue()).decode()
@@ -406,7 +406,7 @@ def faceDetection() -> dict | None:
             with torch.no_grad():
                 embedding = inception_resnet(face_tensor)
 
-            embedding        = embedding.cpu().numpy().flatten()
+            embedding = embedding.cpu().numpy().flatten()
             embedding_base64 = base64.b64encode(embedding.tobytes()).decode()
 
             # ── Clean up and return ───────────────────────────────
@@ -415,8 +415,8 @@ def faceDetection() -> dict | None:
             cv2.destroyAllWindows()
 
             return {
-                "message":          "Face Detected",
-                "image_base64":     face_base64,
+                "message": "Face Detected",
+                "image_base64": face_base64,
                 "embedding_base64": embedding_base64,
             }
 

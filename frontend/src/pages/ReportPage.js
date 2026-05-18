@@ -1,102 +1,324 @@
-// src/pages/ReportPage.js — ProctorAI Premium
-
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { reportAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import IntegrityReport from '../components/IntegrityReport';
 import GazeHeatmap from '../components/GazeHeatmap';
-import { colors, fonts, radius, shadow, statusConfig } from '../styles/theme';
-import { btn } from '../styles/styles';
+import IntegrityReport from '../components/IntegrityReport';
 
-const S = {
-  page: { minHeight: '100vh', background: colors.gray50, fontFamily: fonts.ui, color: colors.gray900 },
-
-  navbar: {
-    background: colors.white, borderBottom: `1px solid ${colors.gray200}`,
-    padding: '0 28px', height: '58px',
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    position: 'sticky', top: 0, zIndex: 10,
-    boxShadow: '0 1px 0 #e2e6ef, 0 2px 8px rgba(10,22,40,0.04)',
-  },
-  navLogo: {
-    width: '34px', height: '34px',
-    background: 'linear-gradient(135deg, #0a1628 0%, #122040 100%)',
-    borderRadius: radius.md,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 2px 8px rgba(10,22,40,0.20)',
-  },
-
-  body: { maxWidth: '880px', margin: '0 auto', padding: '32px 24px' },
-
-  // Report header — solid smooth gradient, single glow, no grid
-  reportHeader: {
-    background: 'linear-gradient(145deg, #0a1628 0%, #0f2244 50%, #162d58 100%)',
-    borderRadius: radius.xl, padding: '26px 30px', marginBottom: '18px',
-    position: 'relative', overflow: 'hidden', boxShadow: shadow.lg,
-  },
-  headerGlow: {
-    position: 'absolute', top: '-30px', right: '-30px', width: '180px', height: '180px',
-    background: 'radial-gradient(circle, rgba(249,115,22,0.14) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
-  metaGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', position: 'relative' },
-  metaLabel: { fontSize: '10px', fontWeight: 700, color: 'rgba(255,255,255,0.40)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' },
-  metaValue: { fontFamily: fonts.display, fontSize: '17px', fontWeight: 600, color: colors.white, marginBottom: '3px' },
-  metaSub: { fontSize: '12px', color: 'rgba(255,255,255,0.45)' },
-
-  statCards: { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' },
-  statCard: (col) => ({
-    background: colors.white, border: `1px solid ${colors.gray200}`,
-    borderRadius: radius.lg, padding: '14px 16px',
-    textAlign: 'center', boxShadow: shadow.xs,
-    borderTop: `3px solid ${col}`,
-  }),
-  statVal: (col) => ({ fontFamily: fonts.mono, fontSize: '21px', fontWeight: 700, color: col, lineHeight: 1, marginBottom: '5px' }),
-  statLbl: { fontSize: '10px', fontWeight: 700, color: colors.gray400, textTransform: 'uppercase', letterSpacing: '0.06em' },
-
-  sectionCard: {
-    background: colors.white, border: `1px solid ${colors.gray200}`,
-    borderRadius: radius.lg, padding: '20px 22px', boxShadow: shadow.xs, marginBottom: '14px',
-  },
-  sectionTitle: {
-    fontSize: '10px', fontWeight: 700, color: colors.gray400,
-    textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '16px',
-    display: 'flex', alignItems: 'center', gap: '8px',
-  },
-  sectionRule: { flex: 1, height: '1px', background: colors.gray200 },
-
-  violRow: (high) => ({
-    display: 'grid', gridTemplateColumns: '80px 1fr 80px 48px',
-    gap: '10px', alignItems: 'center',
-    padding: '8px 12px', borderRadius: radius.sm, marginBottom: '4px',
-    background: high ? colors.dangerLight : colors.gray50,
-    border: `1px solid ${high ? colors.dangerBorder : colors.gray100}`,
-    fontSize: '12px',
-  }),
-  violType: (high) => ({ fontWeight: 600, color: high ? colors.dangerMid : colors.gray700, fontSize: '12px' }),
-  weightBadge: (high) => ({
-    textAlign: 'center', borderRadius: '99px', padding: '2px 8px',
-    background: high ? '#fecaca' : colors.gray200,
-    color: high ? colors.dangerMid : colors.gray500,
-    fontSize: '10px', fontWeight: 700, fontFamily: fonts.mono,
-    border: `1px solid ${high ? colors.dangerBorder : colors.gray300}`,
-  }),
+// ── Design tokens (navy + orange — no external CSS vars needed) ──
+const C = {
+  navy: '#1e3a5f',
+  navyMid: '#2d5282',
+  navyLt: '#ebf4ff',
+  navyBd: '#bfdbfe',
+  orange: '#ea580c',
+  orangeLt: '#fff7ed',
+  orangeBd: '#fed7aa',
+  white: '#ffffff',
+  gray50: '#fafafa',
+  gray100: '#f4f4f5',
+  gray200: '#e4e4e7',
+  gray300: '#d4d4d8',
+  gray400: '#a1a1aa',
+  gray500: '#71717a',
+  gray600: '#52525b',
+  gray700: '#3f3f46',
+  gray900: '#18181b',
+  safe: '#059669',
+  safeLt: '#ecfdf5',
+  safeBd: '#a7f3d0',
+  safeMid: '#16a34a',
+  warn: '#d97706',
+  warnLt: '#fffbeb',
+  warnBd: '#fde68a',
+  danger: '#dc2626',
+  dangerLt: '#fff1f2',
+  dangerBd: '#fecdd3',
 };
 
+const LEVEL_COL = { SAFE: C.safeMid, WARNING: C.warn, HIGH: C.danger, CRITICAL: '#991b1b' };
+const LEVEL_BG = { SAFE: C.safeLt, WARNING: C.warnLt, HIGH: C.dangerLt, CRITICAL: '#fef2f2' };
+
+// ── All styles ────────────────────────────────────────────────────
+const S = {
+  page: {
+    minHeight: '100vh',
+    background: `linear-gradient(160deg, ${C.navy} 0%, #0f2340 100%)`,
+    fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif",
+    color: C.gray900,
+  },
+  navbar: {
+    background: `rgba(30,58,95,0.96)`,
+    backdropFilter: 'blur(8px)',
+    borderBottom: `1px solid rgba(255,255,255,0.1)`,
+    padding: '0 28px', height: '56px',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    position: 'sticky', top: 0, zIndex: 50,
+  },
+  navBrand: { display: 'flex', alignItems: 'center', gap: '10px' },
+  navLogo: {
+    width: 32, height: 32, borderRadius: '8px',
+    background: C.orange, display: 'flex',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  navTitle: {
+    fontFamily: "'DM Serif Display', Georgia, serif",
+    fontSize: '16px', color: C.white, letterSpacing: '-0.02em',
+  },
+  navActions: { display: 'flex', alignItems: 'center', gap: '8px' },
+  dlBtn: {
+    background: C.orange, color: C.white,
+    border: 'none', borderRadius: '7px',
+    padding: '7px 16px', fontSize: '12px', fontWeight: 700,
+    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px',
+    boxShadow: '0 2px 6px rgba(234,88,12,0.35)',
+  },
+  backBtn: {
+    background: 'rgba(255,255,255,0.12)', color: C.white,
+    border: '1px solid rgba(255,255,255,0.2)', borderRadius: '7px',
+    padding: '7px 14px', fontSize: '12px', fontWeight: 500,
+    cursor: 'pointer',
+  },
+  body: { maxWidth: '900px', margin: '0 auto', padding: '28px 20px 56px' },
+  // Hero score card (admin+student)
+  hero: {
+    background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navyMid} 100%)`,
+    border: `1px solid rgba(255,255,255,0.12)`,
+    borderRadius: '14px', padding: '24px 28px',
+    marginBottom: '20px', color: C.white,
+    display: 'flex', alignItems: 'center', gap: '28px',
+    flexWrap: 'wrap',
+  },
+  heroScore: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: '56px', fontWeight: 700, color: C.white, lineHeight: 1,
+  },
+  heroLabel: {
+    fontSize: '12px', color: 'rgba(255,255,255,0.55)',
+    textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '4px'
+  },
+  heroDivider: { width: 1, height: 60, background: 'rgba(255,255,255,0.15)', flexShrink: 0 },
+  heroPill: (level) => ({
+    display: 'inline-block',
+    background: level === 'SAFE' ? 'rgba(16,185,129,0.2)'
+      : level === 'WARNING' ? 'rgba(217,119,6,0.2)'
+        : level === 'HIGH' ? 'rgba(220,38,38,0.2)'
+          : 'rgba(153,27,27,0.3)',
+    border: `1px solid ${level === 'SAFE' ? 'rgba(16,185,129,0.4)' :
+      level === 'WARNING' ? 'rgba(217,119,6,0.4)' :
+        'rgba(220,38,38,0.4)'}`,
+    color: level === 'SAFE' ? '#6ee7b7'
+      : level === 'WARNING' ? '#fcd34d'
+        : '#fca5a5',
+    borderRadius: '99px', padding: '4px 14px',
+    fontSize: '12px', fontWeight: 700, letterSpacing: '0.04em',
+    marginBottom: '8px', display: 'inline-block',
+  }),
+  // Info cards
+  metaGrid: {
+    display: 'grid', gridTemplateColumns: '1fr 1fr',
+    gap: '16px', marginBottom: '16px',
+  },
+  infoCard: {
+    background: C.white, border: `1px solid ${C.gray200}`,
+    borderRadius: '10px', padding: '16px 20px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+  },
+  infoLabel: {
+    fontSize: '10px', fontWeight: 700, color: C.gray400,
+    textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px',
+  },
+  infoVal: {
+    fontFamily: "'DM Serif Display', Georgia, serif",
+    fontSize: '15px', fontWeight: 400, color: C.gray900,
+    letterSpacing: '-0.02em', marginBottom: '2px',
+  },
+  infoSub: { fontSize: '12px', color: C.gray500 },
+  // Stat strip
+  statStrip: {
+    display: 'grid', gridTemplateColumns: 'repeat(4,1fr)',
+    gap: '10px', marginBottom: '20px',
+  },
+  statCard: (hi) => ({
+    background: C.white, border: `1px solid ${hi ? C.orangeBd : C.gray200}`,
+    borderTop: `3px solid ${hi ? C.orange : C.gray200}`,
+    borderRadius: '10px', padding: '14px 16px', textAlign: 'center',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+  }),
+  statVal: (col) => ({
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: '22px', fontWeight: 700, color: col || C.gray900, lineHeight: 1,
+  }),
+  statLbl: {
+    fontSize: '10px', fontWeight: 600, color: C.gray400,
+    textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: '5px',
+  },
+  // Section cards
+  section: {
+    background: C.white, border: `1px solid ${C.gray200}`,
+    borderRadius: '10px', padding: '18px 20px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    marginBottom: '16px',
+  },
+  sectionTitle: {
+    fontSize: '11px', fontWeight: 700, color: C.gray400,
+    textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '14px',
+    paddingBottom: '8px', borderBottom: `1px solid ${C.gray100}`,
+  },
+  // Module bars
+  modRow: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' },
+  modLabel: { fontSize: '12px', color: C.gray600, width: '72px', flexShrink: 0 },
+  modTrack: { flex: 1, height: 6, background: C.gray100, borderRadius: '99px', overflow: 'hidden' },
+  modFill: (v) => ({
+    height: '100%',
+    width: `${Math.min(100, v || 0)}%`,
+    background: (v || 0) > 60 ? C.danger : (v || 0) > 30 ? C.warn : C.safeMid,
+    borderRadius: '99px', transition: 'width 0.6s ease',
+  }),
+  modVal: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: '11px', color: C.gray400, width: '32px', textAlign: 'right',
+  },
+  // Violation timeline
+  timelineWrap: { maxHeight: '460px', overflowY: 'auto' },
+  timelineRow: (high) => ({
+    display: 'flex', gap: '12px', alignItems: 'flex-start',
+    padding: '8px 0',
+    borderBottom: `1px solid ${C.gray100}`,
+  }),
+  tlTime: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: '11px', color: C.gray400,
+    width: '60px', flexShrink: 0, paddingTop: '2px',
+  },
+  tlDot: (level) => ({
+    width: 10, height: 10, borderRadius: '50%', flexShrink: 0, marginTop: '4px',
+    background: level === 'HIGH' || level === 'CRITICAL' ? C.danger : C.warn,
+  }),
+  tlType: (high) => ({
+    fontWeight: 700, fontSize: '13px',
+    color: high ? C.danger : C.gray900,
+    marginBottom: '2px',
+  }),
+  tlMeta: {
+    fontSize: '11px', color: C.gray500, display: 'flex', gap: '12px', flexWrap: 'wrap',
+  },
+  tlWt: (high) => ({
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: '10px', fontWeight: 700,
+    color: high ? C.orange : C.gray400,
+    background: high ? C.orangeLt : C.gray100,
+    border: `1px solid ${high ? C.orangeBd : C.gray200}`,
+    borderRadius: '99px', padding: '2px 8px',
+  }),
+  // Student-only info box
+  viewOnlyBanner: {
+    background: C.navyLt, border: `1px solid ${C.navyBd}`,
+    borderLeft: `3px solid ${C.navy}`,
+    borderRadius: '8px', padding: '10px 14px',
+    fontSize: '12px', color: C.navyMid,
+    display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px',
+  },
+};
+
+// ── Helpers ───────────────────────────────────────────────────────
+const fmtTime = (ts) => {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+};
+const fmtDate = (ts) => {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+};
+
+// ── Sub-components ────────────────────────────────────────────────
+function ModuleBreakdown({ risk }) {
+  const modules = [
+    ['Face', risk?.face_score],
+    ['Pose', risk?.pose_score],
+    ['Objects', risk?.object_score],
+    ['Audio', risk?.audio_score],
+    ['Browser', risk?.browser_score],
+  ];
+  return (
+    <div>
+      {modules.map(([label, val]) => (
+        <div key={label} style={S.modRow}>
+          <span style={S.modLabel}>{label}</span>
+          <div style={S.modTrack}><div style={S.modFill(val)} /></div>
+          <span style={S.modVal}>{((val || 0)).toFixed(0)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ViolationTimeline({ violations }) {
+  if (!violations?.length) {
+    return <div style={{ color: C.safeMid, fontSize: '13px' }}>No violations recorded.</div>;
+  }
+  return (
+    <div style={S.timelineWrap}>
+      {/* Column headers */}
+      <div style={{
+        display: 'flex', gap: '12px',
+        fontSize: '10px', fontWeight: 700, color: C.gray400,
+        textTransform: 'uppercase', letterSpacing: '0.06em',
+        padding: '0 0 6px', borderBottom: `1px solid ${C.gray200}`, marginBottom: '4px'
+      }}>
+        <span style={{ width: '60px', flexShrink: 0 }}>Time</span>
+        <span style={{ width: 10, flexShrink: 0 }} />
+        <span style={{ flex: 1 }}>Violation</span>
+        <span>Module</span>
+        <span style={{ width: '40px', textAlign: 'right' }}>Wt.</span>
+      </div>
+      {violations.map((v, i) => {
+        const high = v.weight >= 20;
+        const vt = v.violation_type?.replace(/_/g, ' ').toLowerCase() || '—';
+        return (
+          <div key={i} style={S.timelineRow(high)}>
+            <span style={S.tlTime}>{fmtTime(v.timestamp)}</span>
+            <div style={S.tlDot(high ? 'HIGH' : 'WARNING')} />
+            <div style={{ flex: 1 }}>
+              <div style={S.tlType(high)}>{vt}</div>
+              {v.description && (
+                <div style={{ fontSize: '10px', color: C.gray400, marginTop: '1px' }}>
+                  {v.description}
+                </div>
+              )}
+            </div>
+            <span style={{
+              fontSize: '11px', color: C.gray500,
+              background: C.gray50, padding: '2px 8px',
+              border: `1px solid ${C.gray200}`, borderRadius: '4px',
+              flexShrink: 0, fontSize: '10px'
+            }}>
+              {v.source_module || '—'}
+            </span>
+            <span style={S.tlWt(high)}>w:{v.weight}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────
 export default function ReportPage() {
   const [sp] = useSearchParams();
   const sessionId = sp.get('session');
   const navigate = useNavigate();
   const { user } = useAuth();
+
   const [data, setData] = useState(null);
   const [loading, setLoad] = useState(true);
   const [error, setError] = useState('');
   const [dlLoad, setDlLoad] = useState(false);
+
   const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
-    if (!sessionId) { setError('No session ID provided.'); setLoad(false); return; }
+    if (!sessionId) { setError('No session ID.'); setLoad(false); return; }
     reportAPI.get(sessionId)
       .then(r => setData(r.data))
       .catch(e => setError(e.response?.data?.detail || 'Failed to load report.'))
@@ -108,10 +330,14 @@ export default function ReportPage() {
     setDlLoad(true);
     try {
       const token = localStorage.getItem('token');
-      const gen = await fetch(`/api/v1/reports/generate/${sessionId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-      if (!gen.ok) throw new Error('Generation failed');
-      const res = await fetch(`/api/v1/reports/${sessionId}/download`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+      // Ensure PDF is generated first
+      await fetch(`/api/v1/reports/generate/${sessionId}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await fetch(`/api/v1/reports/${sessionId}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -121,20 +347,35 @@ export default function ReportPage() {
     finally { setDlLoad(false); }
   };
 
+  // Loading spinner
   if (loading) return (
-    <div style={{ minHeight: '100vh', background: colors.gray50, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px' }}>
-      <div style={{ width: 34, height: 34, border: `3px solid ${colors.gray200}`, borderTopColor: colors.accent, borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-      <div style={{ fontSize: '13px', color: colors.gray500 }}>Loading report…</div>
+    <div style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{
+        width: 36, height: 36,
+        border: '3px solid rgba(255,255,255,0.2)', borderTopColor: C.orange,
+        borderRadius: '50%', animation: 'spin 0.8s linear infinite'
+      }} />
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 
+  // Error state
   if (error) return (
-    <div style={{ minHeight: '100vh', background: colors.gray50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-      <div style={{ ...S.sectionCard, maxWidth: '420px', textAlign: 'center', padding: '48px' }}>
-        <div style={{ color: colors.dangerMid, fontSize: '14px', fontWeight: 600, marginBottom: '16px' }}>{error}</div>
-        <button style={btn.secondary} onClick={() => navigate('/dashboard')}>Back to Dashboard</button>
+    <div style={{
+      ...S.page, display: 'flex', alignItems: 'center',
+      justifyContent: 'center', padding: '24px'
+    }}>
+      <div style={{
+        background: C.white, borderRadius: '12px', padding: '40px',
+        maxWidth: '400px', width: '100%', textAlign: 'center',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+      }}>
+        <div style={{ color: C.danger, fontSize: '13px', marginBottom: '16px' }}>{error}</div>
+        <button style={S.backBtn} onClick={() => navigate(isAdmin ? '/admin' : '/dashboard')}>
+          Go Back
+        </button>
       </div>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 
@@ -143,142 +384,170 @@ export default function ReportPage() {
   const score = risk.final_score || 0;
   const prob = risk.cheat_probability || 0;
   const viols = data?.violations || [];
-  const mstats = data?.module_stats || {};
-  const cfg = statusConfig[level] || statusConfig.SAFE;
 
   return (
     <div style={S.page}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+        @keyframes spin{to{transform:rotate(360deg)}}
+        ::-webkit-scrollbar{width:4px;height:4px}
+        ::-webkit-scrollbar-track{background:#f4f4f5}
+        ::-webkit-scrollbar-thumb{background:#d4d4d8;border-radius:99px}
+      `}</style>
+
+      {/* Navbar */}
       <nav style={S.navbar}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={S.navBrand}>
           <div style={S.navLogo}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2L4 6v6c0 5.5 3.6 10.3 8 12 4.4-1.7 8-6.5 8-12V6L12 2z" fill="white" opacity=".95" />
+              <path d="M12 2L4 6v6c0 5.5 3.6 10.3 8 12 4.4-1.7 8-6.5 8-12V6L12 2z" fill="white" />
             </svg>
           </div>
-          <span style={{ fontFamily: fonts.display, fontSize: '15px', fontWeight: 700, color: colors.gray900 }}>Exam Report</span>
-          <span style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: '99px', padding: '2px 10px', fontSize: '11px', fontWeight: 700 }}>
-            {cfg.label}
+          <span style={S.navTitle}>Exam Report</span>
+          <span style={{
+            background: 'rgba(234,88,12,0.2)', color: C.orange,
+            border: '1px solid rgba(234,88,12,0.3)', borderRadius: '99px',
+            padding: '2px 10px', fontSize: '10px', fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.05em', marginLeft: '8px'
+          }}>
+            {isAdmin ? 'Admin' : 'Student View'}
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {isAdmin ? (
-            <button className="btn-primary" style={{ fontSize: '12px', padding: '8px 16px' }} onClick={handleDownload} disabled={dlLoad}>
-              {dlLoad ? 'Generating…' : 'Download PDF'}
+        <div style={S.navActions}>
+          {/* Admin only download */}
+          {isAdmin && (
+            <button style={S.dlBtn} onClick={handleDownload} disabled={dlLoad}>
+              {dlLoad ? 'Generating…' : '↓ Download PDF'}
             </button>
-          ) : (
-            <span style={{ fontSize: '11px', color: colors.gray400 }}>Admin access required for download</span>
           )}
-          <button style={{ ...btn.secondary, fontSize: '12px', padding: '7px 14px' }}
+          <button style={S.backBtn}
             onClick={() => navigate(isAdmin ? '/admin' : '/dashboard')}>
-            Back
+            ← Back
           </button>
         </div>
       </nav>
 
       <div style={S.body}>
-        {/* Header card */}
-        <div style={S.reportHeader}>
-          <div style={S.headerGlow} />
-          <div style={S.metaGrid}>
-            <div>
-              <div style={S.metaLabel}>Candidate</div>
-              <div style={S.metaValue}>{data?.candidate?.name || '—'}</div>
-              <div style={S.metaSub}>{data?.candidate?.email}</div>
-            </div>
-            <div>
-              <div style={S.metaLabel}>Exam</div>
-              <div style={S.metaValue}>{data?.exam?.title || '—'}</div>
-              <div style={S.metaSub}>
-                {data?.exam?.started_at ? new Date(data.exam.started_at * 1000).toLocaleString() : '—'}
-              </div>
-            </div>
+
+        {/* Hero risk card */}
+        <div style={S.hero}>
+          <div>
+            <div style={S.heroPill(level)}>{level}</div>
+            <div style={S.heroScore}>{score.toFixed(1)}</div>
+            <div style={S.heroLabel}>Risk Score / 100</div>
           </div>
-        </div>
-
-        {/* Metric cards */}
-        <div style={S.statCards}>
-          {[
-            { l: 'Risk Score', v: `${score.toFixed(1)}`, u: '/100', col: cfg.color },
-            { l: 'Risk Level', v: cfg.label, u: '', col: cfg.color },
-            { l: 'Cheat Prob.', v: `${(prob * 100).toFixed(1)}`, u: '%', col: prob > 0.75 ? colors.dangerMid : prob > 0.4 ? colors.warningMid : colors.successMid },
-            { l: 'Violations', v: viols.length, u: '', col: colors.gray700 },
-          ].map(({ l, v, u, col }) => (
-            <div key={l} style={S.statCard(col)}>
-              <div style={S.statVal(col)}>
-                {v}<span style={{ fontSize: '12px', color: colors.gray400, fontWeight: 400 }}>{u}</span>
-              </div>
-              <div style={S.statLbl}>{l}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Module breakdown */}
-        {Object.keys(mstats).length > 0 && (
-          <div style={S.sectionCard}>
-            <div style={S.sectionTitle}>Module Breakdown <div style={S.sectionRule} /></div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '10px' }}>
-              {Object.entries(mstats).map(([mod, s]) => (
-                <div key={mod} style={{ background: colors.gray50, border: `1px solid ${colors.gray200}`, borderRadius: radius.md, padding: '12px', textAlign: 'center' }}>
-                  <div style={{ fontFamily: fonts.mono, fontSize: '22px', fontWeight: 700, color: colors.gray900 }}>{s.violation_count}</div>
-                  <div style={{ fontSize: '10px', color: colors.gray500, textTransform: 'capitalize', fontWeight: 600, marginTop: '3px' }}>{mod}</div>
+          <div style={S.heroDivider} />
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '16px' }}>
+              {[
+                {
+                  l: 'Cheat Probability', v: `${(prob * 100).toFixed(1)}%`,
+                  col: prob > 0.75 ? '#fca5a5' : prob > 0.4 ? '#fcd34d' : '#6ee7b7'
+                },
+                { l: 'Violations Total', v: viols.length, col: C.white },
+                { l: 'Duration', v: `${(data?.exam?.duration_min || 0).toFixed(0)}m`, col: C.white },
+                { l: 'Session', v: sessionId?.slice(0, 8) + '…', col: 'rgba(255,255,255,0.5)' },
+              ].map(({ l, v, col }) => (
+                <div key={l}>
+                  <div style={{
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    fontSize: '20px', fontWeight: 700, color: col
+                  }}>{v}</div>
+                  <div style={{
+                    fontSize: '10px', color: 'rgba(255,255,255,0.5)',
+                    textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: '3px'
+                  }}>
+                    {l}
+                  </div>
                 </div>
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Student view-only banner */}
+        {!isAdmin && (
+          <div style={S.viewOnlyBanner}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke={C.navy} strokeWidth="2" />
+              <path d="M12 8v4m0 4h.01" stroke={C.navy} strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <span>
+              This report is <strong>view-only</strong>. Contact your invigilator for a copy.
+            </span>
+          </div>
         )}
 
-        {/* Gaze heatmap */}
-        {data?.gaze_summary && (
-          <div style={S.sectionCard}>
-            <div style={S.sectionTitle}>Gaze Analysis <div style={S.sectionRule} /></div>
+        {/* Candidate + Exam info */}
+        <div style={S.metaGrid}>
+          <div style={S.infoCard}>
+            <div style={S.infoLabel}>Candidate</div>
+            <div style={S.infoVal}>{data?.candidate?.name || '—'}</div>
+            <div style={S.infoSub}>{data?.candidate?.email || ''}</div>
+          </div>
+          <div style={S.infoCard}>
+            <div style={S.infoLabel}>Exam</div>
+            <div style={S.infoVal}>{data?.exam?.title || '—'}</div>
+            <div style={S.infoSub}>{fmtDate(data?.exam?.started_at)}</div>
+          </div>
+        </div>
+
+        {/* Module breakdown (admin only) */}
+        {isAdmin && (
+          <div style={S.section}>
+            <div style={S.sectionTitle}>Module Scores</div>
+            <ModuleBreakdown risk={risk} />
+          </div>
+        )}
+
+        {/* Violation timeline — shown to everyone */}
+        <div style={S.section}>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', marginBottom: '14px',
+            paddingBottom: '8px', borderBottom: `1px solid ${C.gray100}`
+          }}>
+            <div style={S.sectionTitle} className="m0">
+              Violation Timeline
+            </div>
+            <span style={{
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: '12px', fontWeight: 700,
+              background: viols.length > 0 ? C.orangeLt : C.safeLt,
+              color: viols.length > 0 ? C.orange : C.safeMid,
+              border: `1px solid ${viols.length > 0 ? C.orangeBd : C.safeBd}`,
+              borderRadius: '99px', padding: '2px 10px'
+            }}>
+              {viols.length} violation{viols.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+          <ViolationTimeline violations={viols} />
+        </div>
+
+        {/* Gaze heatmap — admin only */}
+        {isAdmin && data?.gaze_summary && (
+          <div style={S.section}>
+            <div style={S.sectionTitle}>Gaze Analysis</div>
             <GazeHeatmap gazeData={data.gaze_summary} />
           </div>
         )}
 
-        {/* Violation timeline */}
-        <div style={S.sectionCard}>
-          <div style={S.sectionTitle}>
-            Violation Timeline
-            <div style={S.sectionRule} />
-            <span style={{
-              background: viols.length > 0 ? colors.dangerLight : colors.successLight,
-              color: viols.length > 0 ? colors.dangerMid : colors.successMid,
-              border: `1px solid ${viols.length > 0 ? colors.dangerBorder : colors.successBorder}`,
-              borderRadius: '99px', padding: '1px 8px', fontSize: '10px',
-            }}>{viols.length} events</span>
-          </div>
-          {viols.length === 0 ? (
-            <div style={{ color: colors.successMid, fontSize: '13px', fontWeight: 600 }}>No violations recorded</div>
-          ) : (
-            <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', gap: '8px', padding: '4px 12px 8px', fontSize: '10px', fontWeight: 700, color: colors.gray400, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                <span style={{ width: '80px' }}>Time</span>
-                <span style={{ flex: 1 }}>Type</span>
-                <span style={{ width: '80px' }}>Confidence</span>
-                <span style={{ width: '48px' }}>Weight</span>
-              </div>
-              {viols.map((v, i) => {
-                const ts = v.timestamp ? new Date(v.timestamp * 1000).toLocaleTimeString() : '—';
-                const high = (v.weight || 0) >= 30;
-                return (
-                  <div key={i} style={S.violRow(high)}>
-                    <span style={{ fontFamily: fonts.mono, fontSize: '10px', color: colors.gray400 }}>{ts}</span>
-                    <span style={S.violType(high)}>{v.violation_type}</span>
-                    <span style={{ fontFamily: fonts.mono, fontSize: '10px', color: colors.gray400 }}>{((v.confidence || 0) * 100).toFixed(0)}%</span>
-                    <span style={S.weightBadge(high)}>w:{v.weight}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        {/* Integrity assessment — admin only */}
+        {isAdmin && data?.integrity_assessment && (
+          <IntegrityReport assessment={data.integrity_assessment} />
+        )}
 
-        {data?.integrity_assessment && <IntegrityReport assessment={data.integrity_assessment} />}
-
-        <p style={{ color: colors.gray400, fontSize: '11px', textAlign: 'center', marginTop: '24px', lineHeight: 1.6 }}>
-          This report was generated by ProctorAI. All detections should be reviewed by a human invigilator before any disciplinary action is taken.
+        {/* Disclaimer */}
+        <p style={{
+          color: 'rgba(255,255,255,0.3)', fontSize: '11px',
+          textAlign: 'center', marginTop: '24px', lineHeight: 1.7
+        }}>
+          This report was generated by the ProctorAI system.
+          All detections must be reviewed by a qualified invigilator before any action is taken.
         </p>
       </div>
+
+      <style>{`.m0{margin-bottom:0!important}`}</style>
     </div>
   );
 }

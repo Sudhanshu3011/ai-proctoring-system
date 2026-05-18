@@ -1,6 +1,4 @@
 """
-ai_engine/face_module/liveness.py
-
 Multi-Frame Liveness Detection Engine
 
 Approach:
@@ -51,22 +49,22 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 class LivenessConfig:
     # Blink detection
-    BLINK_CLOSE_THRESHOLD  = 0.35   # score above this = eye closing
-    BLINK_OPEN_THRESHOLD   = 0.15   # score below this = eye open again
-    BLINK_MAX_DURATION_MS  = 500    # blink must complete within 500ms
-    BLINK_MIN_PEAK         = 0.40   # peak blink score must exceed this
+    BLINK_CLOSE_THRESHOLD = 0.35  # score above this = eye closing
+    BLINK_OPEN_THRESHOLD = 0.15  # score below this = eye open again
+    BLINK_MAX_DURATION_MS = 500  # blink must complete within 500ms
+    BLINK_MIN_PEAK = 0.40  # peak blink score must exceed this
 
     # Head movement
-    HEAD_MOVE_MIN_PIXELS   = 8      # minimum nose displacement across sequence
-    HEAD_MOVE_MIN_FRAMES   = 5      # must show movement across at least 5 frames
+    HEAD_MOVE_MIN_PIXELS = 8  # minimum nose displacement across sequence
+    HEAD_MOVE_MIN_FRAMES = 5  # must show movement across at least 5 frames
 
     # Temporal variance
-    TEMPORAL_VAR_THRESHOLD = 15.0   # frame-to-frame variance must exceed this
-    TEMPORAL_VAR_MIN_FRAMES= 5      # at least 5 frames must show variation
+    TEMPORAL_VAR_THRESHOLD = 15.0  # frame-to-frame variance must exceed this
+    TEMPORAL_VAR_MIN_FRAMES = 5  # at least 5 frames must show variation
 
     # Passing criteria
-    MIN_SIGNALS_TO_PASS    = 2      # must pass at least 2 of 3 signals
-    MIN_FRAMES_REQUIRED    = 8      # reject if too few frames sent
+    MIN_SIGNALS_TO_PASS = 2  # must pass at least 2 of 3 signals
+    MIN_FRAMES_REQUIRED = 8  # reject if too few frames sent
 
 
 # ─────────────────────────────────────────────
@@ -74,15 +72,15 @@ class LivenessConfig:
 # ─────────────────────────────────────────────
 @dataclass
 class LivenessResult:
-    is_live:          bool
-    confidence:       float          # 0.0–1.0 based on signals passed
-    signals_passed:   int            # 0, 1, 2, or 3
-    blink_detected:   bool = False
-    head_moved:       bool = False
-    temporal_varied:  bool = False
-    frames_analyzed:  int  = 0
-    reason:           str  = ""
-    debug_info:       dict = field(default_factory=dict)
+    is_live: bool
+    confidence: float  # 0.0–1.0 based on signals passed
+    signals_passed: int  # 0, 1, 2, or 3
+    blink_detected: bool = False
+    head_moved: bool = False
+    temporal_varied: bool = False
+    frames_analyzed: int = 0
+    reason: str = ""
+    debug_info: dict = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────
@@ -104,18 +102,19 @@ class LivenessChecker:
 
         if model_path is None:
             import os
+
             base = os.path.dirname(os.path.abspath(__file__))
             model_path = os.path.join(base, "models", "face_landmarker.task")
 
         options = FaceLandmarkerOptions(
-            base_options  = BaseOptions(model_asset_path=model_path),
-            running_mode  = RunningMode.IMAGE,
-            num_faces     = 1,
-            min_face_detection_confidence = 0.5,
-            min_face_presence_confidence  = 0.5,
-            min_tracking_confidence       = 0.5,
-            output_face_blendshapes       = True,
-            output_facial_transformation_matrixes = False,
+            base_options=BaseOptions(model_asset_path=model_path),
+            running_mode=RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+            output_face_blendshapes=True,
+            output_facial_transformation_matrixes=False,
         )
         self._landmarker = FaceLandmarker.create_from_options(options)
         logger.info("LivenessChecker ready.")
@@ -123,123 +122,35 @@ class LivenessChecker:
     # ─────────────────────────────────────────
     #  Main entry point
     # ─────────────────────────────────────────
-    # def check(
-    #     self,
-    #     frames     : list[np.ndarray],
-    #     fps        : float = 10.0,
-    # ) -> LivenessResult:
-    #     """
-    #     Analyse a sequence of BGR frames for liveness.
-
-    #     Args:
-    #         frames: list of BGR numpy arrays (minimum 8, recommend 15-25)
-    #         fps:    frames per second the sequence was captured at
-
-    #     Returns:
-    #         LivenessResult
-    #     """
-    #     n = len(frames)
-    #     if n < self.config.MIN_FRAMES_REQUIRED:
-    #         return LivenessResult(
-    #             is_live        = False,
-    #             confidence     = 0.0,
-    #             signals_passed = 0,
-    #             frames_analyzed= n,
-    #             reason         = (
-    #                 f"Too few frames ({n}). "
-    #                 f"Need at least {self.config.MIN_FRAMES_REQUIRED}."
-    #             ),
-    #         )
-
-    #     # ── Extract per-frame data ────────────────────────────────
-    #     frame_data = self._extract_frame_data(frames)
-    #     valid      = [d for d in frame_data if d["face_detected"]]
-
-    #     if len(valid) < self.config.MIN_FRAMES_REQUIRED // 2:
-    #         return LivenessResult(
-    #             is_live        = False,
-    #             confidence     = 0.0,
-    #             signals_passed = 0,
-    #             frames_analyzed= n,
-    #             reason         = (
-    #                 f"Face not consistently visible "
-    #                 f"({len(valid)}/{n} frames had a face)."
-    #             ),
-    #         )
-
-    #     # ── Run 3 signals ─────────────────────────────────────────
-    #     blink_ok,   blink_dbg  = self._check_blink(valid, fps)
-    #     move_ok,    move_dbg   = self._check_head_movement(valid)
-    #     texture_ok, tex_dbg    = self._check_temporal_variance(frames)
-
-    #     signals_passed = sum([blink_ok, move_ok, texture_ok])
-    #     is_live        = signals_passed >= self.config.MIN_SIGNALS_TO_PASS
-    #     confidence     = signals_passed / 3.0
-
-    #     # Build human-readable reason
-    #     passed  = []
-    #     failed  = []
-    #     if blink_ok:   passed.append("blink")
-    #     else:          failed.append("blink")
-    #     if move_ok:    passed.append("head movement")
-    #     else:          failed.append("head movement")
-    #     if texture_ok: passed.append("temporal variation")
-    #     else:          failed.append("temporal variation")
-
-    #     if is_live:
-    #         reason = f"Liveness confirmed ({', '.join(passed)} detected)."
-    #     else:
-    #         reason = (
-    #             f"Liveness failed — only {signals_passed}/3 signals passed. "
-    #             f"Passed: {passed or ['none']}. "
-    #             f"Failed: {failed}."
-    #         )
-
-    #     logger.info(
-    #         f"Liveness | live={is_live} signals={signals_passed}/3 "
-    #         f"blink={blink_ok} move={move_ok} texture={texture_ok} "
-    #         f"frames={n} valid={len(valid)}"
-    #     )
-
-    #     return LivenessResult(
-    #         is_live         = is_live,
-    #         confidence      = round(confidence, 2),
-    #         signals_passed  = signals_passed,
-    #         blink_detected  = blink_ok,
-    #         head_moved      = move_ok,
-    #         temporal_varied = texture_ok,
-    #         frames_analyzed = n,
-    #         reason          = reason,
-    #         debug_info      = {
-    #             "blink"  : blink_dbg,
-    #             "move"   : move_dbg,
-    #             "texture": tex_dbg,
-    #             "valid_frames": len(valid),
-    #         },
-    #     )
     def check(self, frames, fps=10.0):
         """
         Analyse a sequence of BGR frames for liveness.
         ADDED: immediately fails if multiple faces appear in any frame.
         """
         import numpy as np
-    
+
         n = len(frames)
         if n < self.config.MIN_FRAMES_REQUIRED:
             return LivenessResult(
-                is_live=False, confidence=0.0, signals_passed=0,
+                is_live=False,
+                confidence=0.0,
+                signals_passed=0,
                 frames_analyzed=n,
                 reason=f"Too few frames ({n}). Need at least {self.config.MIN_FRAMES_REQUIRED}.",
             )
-    
+
         frame_data = self._extract_frame_data(frames)
-    
+
         # ── MULTI-FACE CHECK — fail immediately ──────────────────────
         multi_face_frames = [d for d in frame_data if d.get("multi_face")]
-        if len(multi_face_frames) >= 2:   # require at least 2 frames to avoid false positive
+        if (
+            len(multi_face_frames) >= 2
+        ):  # require at least 2 frames to avoid false positive
             max_faces = max(d.get("face_count", 2) for d in multi_face_frames)
             return LivenessResult(
-                is_live=False, confidence=0.0, signals_passed=0,
+                is_live=False,
+                confidence=0.0,
+                signals_passed=0,
                 frames_analyzed=n,
                 reason=(
                     f"Multiple people detected ({max_faces} faces visible in "
@@ -247,102 +158,78 @@ class LivenessChecker:
                     "Please ensure only one person is visible in the camera during enrollment."
                 ),
             )
-    
-        valid = [d for d in frame_data if d["face_detected"] and not d.get("multi_face")]
-    
+
+        valid = [
+            d for d in frame_data if d["face_detected"] and not d.get("multi_face")
+        ]
+
         if len(valid) < self.config.MIN_FRAMES_REQUIRED // 2:
             return LivenessResult(
-                is_live=False, confidence=0.0, signals_passed=0,
+                is_live=False,
+                confidence=0.0,
+                signals_passed=0,
                 frames_analyzed=n,
                 reason=(
                     f"Face not consistently visible "
                     f"({len(valid)}/{n} frames). Ensure good lighting and face the camera."
                 ),
             )
-    
-        blink_ok,   blink_dbg  = self._check_blink(valid, fps)
-        move_ok,    move_dbg   = self._check_head_movement(valid)
-        texture_ok, tex_dbg    = self._check_temporal_variance(frames)
-    
+
+        blink_ok, blink_dbg = self._check_blink(valid, fps)
+        move_ok, move_dbg = self._check_head_movement(valid)
+        texture_ok, tex_dbg = self._check_temporal_variance(frames)
+
         signals_passed = sum([blink_ok, move_ok, texture_ok])
-        is_live        = signals_passed >= self.config.MIN_SIGNALS_TO_PASS
-        confidence     = signals_passed / 3.0
-    
-        passed  = [n for n, ok in [('blink',blink_ok),('head movement',move_ok),('temporal variation',texture_ok)] if ok]
-        failed  = [n for n, ok in [('blink',blink_ok),('head movement',move_ok),('temporal variation',texture_ok)] if not ok]
-    
+        is_live = signals_passed >= self.config.MIN_SIGNALS_TO_PASS
+        confidence = signals_passed / 3.0
+
+        passed = [
+            n
+            for n, ok in [
+                ("blink", blink_ok),
+                ("head movement", move_ok),
+                ("temporal variation", texture_ok),
+            ]
+            if ok
+        ]
+        failed = [
+            n
+            for n, ok in [
+                ("blink", blink_ok),
+                ("head movement", move_ok),
+                ("temporal variation", texture_ok),
+            ]
+            if not ok
+        ]
+
         reason = (
             f"Liveness confirmed ({', '.join(passed)} detected)."
-            if is_live else
-            f"Liveness failed — {signals_passed}/3 signals passed. "
+            if is_live
+            else f"Liveness failed — {signals_passed}/3 signals passed. "
             f"Passed: {passed or ['none']}. Failed: {failed}."
         )
-    
+
         return LivenessResult(
-            is_live=is_live, confidence=round(confidence, 2),
+            is_live=is_live,
+            confidence=round(confidence, 2),
             signals_passed=signals_passed,
-            blink_detected=blink_ok, head_moved=move_ok, temporal_varied=texture_ok,
-            frames_analyzed=n, reason=reason,
-            debug_info={"blink":blink_dbg,"move":move_dbg,"texture":tex_dbg,
-                        "valid_frames":len(valid),
-                        "multi_face_frames": len(multi_face_frames)},
+            blink_detected=blink_ok,
+            head_moved=move_ok,
+            temporal_varied=texture_ok,
+            frames_analyzed=n,
+            reason=reason,
+            debug_info={
+                "blink": blink_dbg,
+                "move": move_dbg,
+                "texture": tex_dbg,
+                "valid_frames": len(valid),
+                "multi_face_frames": len(multi_face_frames),
+            },
         )
 
     # ─────────────────────────────────────────
     #  Frame feature extraction
     # ─────────────────────────────────────────
-    # def _extract_frame_data(self, frames: list[np.ndarray]) -> list[dict]:
-    #     """Run FaceLandmarker on every frame and collect features."""
-    #     result_list = []
-
-    #     for i, frame in enumerate(frames):
-    #         try:
-    #             rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    #             det      = self._landmarker.detect(mp_image)
-    #             h, w     = frame.shape[:2]
-
-    #             if not det.face_landmarks or not det.face_blendshapes:
-    #                 result_list.append({
-    #                     "frame_idx"    : i,
-    #                     "face_detected": False,
-    #                 })
-    #                 continue
-
-    #             # Nose tip position
-    #             nose = det.face_landmarks[0][1]
-    #             nx   = nose.x * w
-    #             ny   = nose.y * h
-
-    #             # Blink scores
-    #             bl = br = 0.0
-    #             for bs in det.face_blendshapes[0]:
-    #                 if bs.category_name == "eyeBlinkLeft":
-    #                     bl = bs.score
-    #                 elif bs.category_name == "eyeBlinkRight":
-    #                     br = bs.score
-
-    #             # Laplacian variance (texture)
-    #             gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    #             lapv  = cv2.Laplacian(gray, cv2.CV_64F).var()
-
-    #             result_list.append({
-    #                 "frame_idx"    : i,
-    #                 "face_detected": True,
-    #                 "nose_x"       : nx,
-    #                 "nose_y"       : ny,
-    #                 "blink_left"   : bl,
-    #                 "blink_right"  : br,
-    #                 "blink_max"    : max(bl, br),
-    #                 "laplacian_var": lapv,
-    #             })
-
-    #         except Exception as e:
-    #             logger.debug(f"Frame {i} extraction error: {e}")
-    #             result_list.append({"frame_idx": i, "face_detected": False})
-
-    #     return result_list
-
     def _extract_frame_data(self, frames):
         """
         Run FaceLandmarker on every frame and collect features.
@@ -350,72 +237,81 @@ class LivenessChecker:
         """
         import mediapipe as mp
         import cv2
-    
+
         result_list = []
-    
+
         for i, frame in enumerate(frames):
             try:
-                rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                det      = self._landmarker.detect(mp_image)
-                h, w     = frame.shape[:2]
-    
+                det = self._landmarker.detect(mp_image)
+                h, w = frame.shape[:2]
+
                 if not det.face_landmarks or not det.face_blendshapes:
-                    result_list.append({
-                        "frame_idx"         : i,
-                        "face_detected"     : False,
-                        "multi_face"        : False,
-                    })
+                    result_list.append(
+                        {
+                            "frame_idx": i,
+                            "face_detected": False,
+                            "multi_face": False,
+                        }
+                    )
                     continue
-                
+
                 # ── MULTI-FACE CHECK ───────────────────────────────────
                 # face_landmarks is a list — one entry per detected face
                 if len(det.face_landmarks) > 1:
-                    result_list.append({
-                        "frame_idx"         : i,
-                        "face_detected"     : True,
-                        "multi_face"        : True,
-                        "face_count"        : len(det.face_landmarks),
-                        # Still extract primary face features so other checks run
-                        "nose_x"            : det.face_landmarks[0][1].x * w,
-                        "nose_y"            : det.face_landmarks[0][1].y * h,
-                        "blink_left"        : 0.0,
-                        "blink_right"       : 0.0,
-                        "blink_max"         : 0.0,
-                        "laplacian_var"     : 0.0,
-                    })
+                    result_list.append(
+                        {
+                            "frame_idx": i,
+                            "face_detected": True,
+                            "multi_face": True,
+                            "face_count": len(det.face_landmarks),
+                            # Still extract primary face features so other checks run
+                            "nose_x": det.face_landmarks[0][1].x * w,
+                            "nose_y": det.face_landmarks[0][1].y * h,
+                            "blink_left": 0.0,
+                            "blink_right": 0.0,
+                            "blink_max": 0.0,
+                            "laplacian_var": 0.0,
+                        }
+                    )
                     continue
-                
+
                 # Single face — normal extraction
                 nose = det.face_landmarks[0][1]
                 nx, ny = nose.x * w, nose.y * h
-    
+
                 bl = br = 0.0
                 for bs in det.face_blendshapes[0]:
                     if bs.category_name == "eyeBlinkLeft":
                         bl = bs.score
                     elif bs.category_name == "eyeBlinkRight":
                         br = bs.score
-    
+
                 import cv2 as _cv2
-                gray  = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
-                lapv  = _cv2.Laplacian(gray, _cv2.CV_64F).var()
-    
-                result_list.append({
-                    "frame_idx"     : i,
-                    "face_detected" : True,
-                    "multi_face"    : False,
-                    "nose_x"        : nx,
-                    "nose_y"        : ny,
-                    "blink_left"    : bl,
-                    "blink_right"   : br,
-                    "blink_max"     : max(bl, br),
-                    "laplacian_var" : lapv,
-                })
-    
+
+                gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
+                lapv = _cv2.Laplacian(gray, _cv2.CV_64F).var()
+
+                result_list.append(
+                    {
+                        "frame_idx": i,
+                        "face_detected": True,
+                        "multi_face": False,
+                        "nose_x": nx,
+                        "nose_y": ny,
+                        "blink_left": bl,
+                        "blink_right": br,
+                        "blink_max": max(bl, br),
+                        "laplacian_var": lapv,
+                    }
+                )
+
             except Exception as e:
-                result_list.append({"frame_idx": i, "face_detected": False, "multi_face": False})
-    
+                result_list.append(
+                    {"frame_idx": i, "face_detected": False, "multi_face": False}
+                )
+
         return result_list
 
     # ─────────────────────────────────────────
@@ -440,22 +336,22 @@ class LivenessChecker:
         A static photo: constant blink score, no cycle.
         A live person: score rises during blink, drops when eye reopens.
         """
-        cfg    = self.config
+        cfg = self.config
         scores = [d["blink_max"] for d in valid_frames]
-        n      = len(scores)
+        n = len(scores)
         ms_per_frame = 1000.0 / fps
 
-        phase     = "OPEN"
-        open_idx  = 0
-        peak      = 0.0
-        blinks    = 0
+        phase = "OPEN"
+        open_idx = 0
+        peak = 0.0
+        blinks = 0
 
         for i, score in enumerate(scores):
             if phase == "OPEN":
                 if score > cfg.BLINK_CLOSE_THRESHOLD:
-                    phase    = "CLOSING"
+                    phase = "CLOSING"
                     open_idx = i
-                    peak     = score
+                    peak = score
 
             elif phase == "CLOSING":
                 peak = max(peak, score)
@@ -464,12 +360,12 @@ class LivenessChecker:
                 if elapsed_ms > cfg.BLINK_MAX_DURATION_MS:
                     # Took too long — reset, not a real blink
                     phase = "OPEN"
-                    peak  = 0.0
+                    peak = 0.0
                 elif score < cfg.BLINK_OPEN_THRESHOLD and peak >= cfg.BLINK_MIN_PEAK:
                     # Complete blink cycle confirmed
                     blinks += 1
-                    phase   = "OPEN"
-                    peak    = 0.0
+                    phase = "OPEN"
+                    peak = 0.0
 
         debug = {
             "blink_cycles_detected": blinks,
@@ -479,7 +375,9 @@ class LivenessChecker:
         }
 
         # Also accept if score range is large (strong blink even if cycle incomplete)
-        score_range_ok = (max(scores) - min(scores)) > 0.30 and max(scores) > cfg.BLINK_MIN_PEAK
+        score_range_ok = (max(scores) - min(scores)) > 0.30 and max(
+            scores
+        ) > cfg.BLINK_MIN_PEAK
 
         passed = blinks >= 1 or score_range_ok
         return passed, debug
@@ -512,14 +410,13 @@ class LivenessChecker:
 
         # Frame-to-frame distances
         distances = [
-            np.sqrt((xs[i] - xs[i-1])**2 + (ys[i] - ys[i-1])**2)
+            np.sqrt((xs[i] - xs[i - 1]) ** 2 + (ys[i] - ys[i - 1]) ** 2)
             for i in range(1, len(xs))
         ]
 
         # Max displacement from first frame position
         max_displacement = max(
-            np.sqrt((x - xs[0])**2 + (y - ys[0])**2)
-            for x, y in zip(xs, ys)
+            np.sqrt((x - xs[0]) ** 2 + (y - ys[0]) ** 2) for x, y in zip(xs, ys)
         )
 
         # Frames with meaningful movement (> 2 pixels from previous)
@@ -527,9 +424,9 @@ class LivenessChecker:
 
         debug = {
             "max_displacement_px": round(max_displacement, 1),
-            "total_path_px"      : round(sum(distances), 1),
-            "moving_frames"      : moving_frames,
-            "total_frames"       : len(xs),
+            "total_path_px": round(sum(distances), 1),
+            "moving_frames": moving_frames,
+            "total_frames": len(xs),
         }
 
         passed = (
@@ -556,9 +453,9 @@ class LivenessChecker:
         Static image → near-zero diff between consecutive frames.
         Live face    → continuous small changes from micro-movement.
         """
-        cfg        = self.config
-        variances  = []
-        frame_diffs= []
+        cfg = self.config
+        variances = []
+        frame_diffs = []
 
         # Sample every 2nd frame to save time
         sampled = frames[::2]
@@ -566,7 +463,7 @@ class LivenessChecker:
         prev_gray = None
         for frame in sampled:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            lv   = cv2.Laplacian(gray, cv2.CV_64F).var()
+            lv = cv2.Laplacian(gray, cv2.CV_64F).var()
             variances.append(lv)
 
             if prev_gray is not None:
@@ -577,22 +474,24 @@ class LivenessChecker:
         if not variances:
             return False, {"reason": "no frames to analyze"}
 
-        lap_variance     = float(np.std(variances))   # std of variances = they change over time
-        mean_frame_diff  = float(np.mean(frame_diffs)) if frame_diffs else 0.0
-        high_var_frames  = sum(1 for v in variances if v > 80)
+        lap_variance = float(
+            np.std(variances)
+        )  # std of variances = they change over time
+        mean_frame_diff = float(np.mean(frame_diffs)) if frame_diffs else 0.0
+        high_var_frames = sum(1 for v in variances if v > 80)
 
         debug = {
-            "laplacian_std"   : round(lap_variance, 2),
-            "mean_frame_diff" : round(mean_frame_diff, 3),
-            "high_var_frames" : high_var_frames,
-            "total_sampled"   : len(sampled),
+            "laplacian_std": round(lap_variance, 2),
+            "mean_frame_diff": round(mean_frame_diff, 3),
+            "high_var_frames": high_var_frames,
+            "total_sampled": len(sampled),
         }
 
         # Pass if:
         # - Frame diffs indicate real movement (not static screen)
         # - OR Laplacian variance itself varies enough across frames
         passed = (
-            mean_frame_diff > 0.8             # continuous pixel change
+            mean_frame_diff > 0.8  # continuous pixel change
             or lap_variance > cfg.TEMPORAL_VAR_THRESHOLD  # texture changing
         )
         return passed, debug
@@ -602,6 +501,7 @@ class LivenessChecker:
 #  Module-level singleton
 # ─────────────────────────────────────────────
 _checker_instance: Optional[LivenessChecker] = None
+
 
 def get_liveness_checker() -> LivenessChecker:
     """Lazy singleton — model loaded once."""

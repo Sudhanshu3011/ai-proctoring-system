@@ -1,6 +1,4 @@
 """
-ai_engine/risk_engine/scoring.py
-
 Risk Scoring Engine — AI Proctoring System
 
 Converts raw violation events + behavior reports into a single
@@ -65,11 +63,11 @@ class RiskConfig:
     # Safe duration per type (seconds) — violation lasting longer
     # than this multiplies its contribution
     DURATION_THRESHOLDS: dict[str, float] = {
-        "FACE_ABSENT"      : 3.0,
-        "LOOKING_AWAY"     : 2.0,
-        "SUSTAINED_SPEECH" : 3.0,
-        "PHONE_DETECTED"   : 1.0,
-        "BOOK_DETECTED"    : 2.0,
+        "FACE_ABSENT": 3.0,
+        "LOOKING_AWAY": 2.0,
+        "SUSTAINED_SPEECH": 3.0,
+        "PHONE_DETECTED": 1.0,
+        "BOOK_DETECTED": 2.0,
     }
     DEFAULT_DURATION_THRESHOLD = 5.0
 
@@ -88,27 +86,27 @@ class RiskConfig:
     # P = 1 / (1 + e^(-k(R - θ)))
     # k = sensitivity (steeper curve = more decisive)
     # θ = inflection point (score at which P = 0.5)
-    SIGMOID_K     = 0.12
-    SIGMOID_THETA = 55.0    # score at which P(cheat) = 50%
+    SIGMOID_K = 0.12
+    SIGMOID_THETA = 55.0  # score at which P(cheat) = 50%
 
     # ── Risk level thresholds ─────────────────────────────────────
-    SAFE_MAX     = 30
-    WARNING_MAX  = 60
-    HIGH_MAX     = 85
+    SAFE_MAX = 30
+    WARNING_MAX = 60
+    HIGH_MAX = 85
     # above 85 → CRITICAL
 
     # ── Auto-termination ──────────────────────────────────────────
-    TERMINATE_SCORE       = 85    # score at which exam is force-ended
+    TERMINATE_SCORE = 85  # score at which exam is force-ended
     TERMINATE_PROBABILITY = 0.90  # OR if cheat probability > 90%
 
     # ── Per-module score caps ─────────────────────────────────────
     # Prevents one noisy module from dominating the total score
     MODULE_SCORE_CAPS: dict[str, float] = {
-        "face"    : 150.0,
-        "pose"    : 100.0,
-        "object"  : 200.0,
-        "audio"   : 100.0,
-        "browser" : 80.0,
+        "face": 150.0,
+        "pose": 100.0,
+        "object": 200.0,
+        "audio": 100.0,
+        "browser": 80.0,
     }
 
 
@@ -116,22 +114,23 @@ class RiskConfig:
 #  Data classes
 # ─────────────────────────────────────────────
 class RiskLevel:
-    SAFE     = "SAFE"
-    WARNING  = "WARNING"
-    HIGH     = "HIGH"
+    SAFE = "SAFE"
+    WARNING = "WARNING"
+    HIGH = "HIGH"
     CRITICAL = "CRITICAL"
 
 
 @dataclass
 class ViolationScore:
     """Score contribution from a single violation event."""
-    violation_type : str
-    weight         : int
-    frequency      : int
-    confidence     : float
+
+    violation_type: str
+    weight: int
+    frequency: int
+    confidence: float
     duration_factor: float
-    raw_score      : float    # Wi × Fi × Ci × Di
-    source_module  : str
+    raw_score: float  # Wi × Fi × Ci × Di
+    source_module: str
 
 
 @dataclass
@@ -140,53 +139,51 @@ class RiskSnapshot:
     Complete risk state at one point in time.
     Stored in DB (RiskScore table) and sent to frontend via WebSocket.
     """
+
     # Scores
-    current_score      : float    # normalised 0–100, sliding window
-    raw_score          : float    # R before normalisation
-    cheat_probability  : float    # sigmoid output 0.0–1.0
-    risk_level         : str      # SAFE | WARNING | HIGH | CRITICAL
+    current_score: float  # normalised 0–100, sliding window
+    raw_score: float  # R before normalisation
+    cheat_probability: float  # sigmoid output 0.0–1.0
+    risk_level: str  # SAFE | WARNING | HIGH | CRITICAL
 
     # Per-module breakdown
-    face_score         : float = 0.0
-    pose_score         : float = 0.0
-    object_score       : float = 0.0
-    audio_score        : float = 0.0
-    browser_score      : float = 0.0
+    face_score: float = 0.0
+    pose_score: float = 0.0
+    object_score: float = 0.0
+    audio_score: float = 0.0
+    browser_score: float = 0.0
 
     # Flags
-    should_warn        : bool  = False   # show popup to candidate
-    should_alert_admin : bool  = False   # ping admin dashboard
-    should_terminate   : bool  = False   # end exam immediately
+    should_warn: bool = False  # show popup to candidate
+    should_alert_admin: bool = False  # ping admin dashboard
+    should_terminate: bool = False  # end exam immediately
 
     # Context
-    timestamp          : float = field(default_factory=time.time)
-    session_id         : str   = ""
-    violation_count    : int   = 0
-    anomaly_multiplier : float = 1.0
-
-    
+    timestamp: float = field(default_factory=time.time)
+    session_id: str = ""
+    violation_count: int = 0
+    anomaly_multiplier: float = 1.0
 
     def to_dict(self) -> dict:
         """All values cast to Python native types — safe for json.dumps and PostgreSQL."""
         return {
-            "current_score"     : float(self.current_score),
-            "raw_score"         : float(self.raw_score),
-            "cheat_probability" : float(self.cheat_probability),
-            "risk_level"        : str(self.risk_level),
-            "face_score"        : float(self.face_score),
-            "pose_score"        : float(self.pose_score),
-            "object_score"      : float(self.object_score),
-            "audio_score"       : float(self.audio_score),
-            "browser_score"     : float(self.browser_score),
-            "should_warn"       : bool(self.should_warn),       # ← fixes np.bool_
+            "current_score": float(self.current_score),
+            "raw_score": float(self.raw_score),
+            "cheat_probability": float(self.cheat_probability),
+            "risk_level": str(self.risk_level),
+            "face_score": float(self.face_score),
+            "pose_score": float(self.pose_score),
+            "object_score": float(self.object_score),
+            "audio_score": float(self.audio_score),
+            "browser_score": float(self.browser_score),
+            "should_warn": bool(self.should_warn),  # ← fixes np.bool_
             "should_alert_admin": bool(self.should_alert_admin),
-            "should_terminate"  : bool(self.should_terminate),
-            "timestamp"         : float(self.timestamp),
-            "session_id"        : str(self.session_id),
-            "violation_count"   : int(self.violation_count),
+            "should_terminate": bool(self.should_terminate),
+            "timestamp": float(self.timestamp),
+            "session_id": str(self.session_id),
+            "violation_count": int(self.violation_count),
             "anomaly_multiplier": float(self.anomaly_multiplier),
         }
-    
 
 
 # ─────────────────────────────────────────────
@@ -217,27 +214,27 @@ class RiskScorer:
 
     def __init__(
         self,
-        session_id : str = "",
-        config     : RiskConfig = None,
+        session_id: str = "",
+        config: RiskConfig = None,
     ):
         self.session_id = session_id
-        self.config     = config or RiskConfig()
+        self.config = config or RiskConfig()
 
         # Sliding window state
-        self._dynamic_score : float = 0.0   # R_t (exponential moving average)
+        self._dynamic_score: float = 0.0  # R_t (exponential moving average)
 
         # Session history for report
-        self._snapshots        : list[RiskSnapshot] = []
-        self._all_events       : list[ViolationEvent] = []
-        self._peak_score       : float = 0.0
-        self._risk_level_times : dict[str, float] = {
-            RiskLevel.SAFE    : 0.0,
-            RiskLevel.WARNING : 0.0,
-            RiskLevel.HIGH    : 0.0,
+        self._snapshots: list[RiskSnapshot] = []
+        self._all_events: list[ViolationEvent] = []
+        self._peak_score: float = 0.0
+        self._risk_level_times: dict[str, float] = {
+            RiskLevel.SAFE: 0.0,
+            RiskLevel.WARNING: 0.0,
+            RiskLevel.HIGH: 0.0,
             RiskLevel.CRITICAL: 0.0,
         }
-        self._prev_risk_level  : str   = RiskLevel.SAFE
-        self._level_entry_time : float = time.time()
+        self._prev_risk_level: str = RiskLevel.SAFE
+        self._level_entry_time: float = time.time()
 
         logger.info(
             f"RiskScorer ready | "
@@ -266,8 +263,8 @@ class RiskScorer:
 
     def _compute_violation_score(
         self,
-        event     : ViolationEvent,
-        frequency : int,
+        event: ViolationEvent,
+        frequency: int,
     ) -> ViolationScore:
         """
         Single violation score:
@@ -281,13 +278,13 @@ class RiskScorer:
         raw = wi * fi * ci * di
 
         return ViolationScore(
-            violation_type  = event.violation_type,
-            weight          = wi,
-            frequency       = fi,
-            confidence      = ci,
-            duration_factor = round(di, 3),
-            raw_score       = round(raw, 3),
-            source_module   = event.source_module,
+            violation_type=event.violation_type,
+            weight=wi,
+            frequency=fi,
+            confidence=ci,
+            duration_factor=round(di, 3),
+            raw_score=round(raw, 3),
+            source_module=event.source_module,
         )
 
     def _normalise(self, raw: float) -> float:
@@ -317,7 +314,7 @@ class RiskScorer:
         At score=85,     P ≈ 0.95.
         At score=30,     P ≈ 0.08.
         """
-        k     = self.config.SIGMOID_K
+        k = self.config.SIGMOID_K
         theta = self.config.SIGMOID_THETA
         try:
             return 1.0 / (1.0 + math.exp(-k * (score - theta)))
@@ -338,8 +335,8 @@ class RiskScorer:
     # ─────────────────────────────────────────
     def _module_scores(
         self,
-        events     : list[ViolationEvent],
-        freq_map   : dict[str, int],
+        events: list[ViolationEvent],
+        freq_map: dict[str, int],
     ) -> dict[str, float]:
         """
         Compute and cap per-module raw score contributions.
@@ -348,15 +345,15 @@ class RiskScorer:
         module_raw: dict[str, float] = {}
 
         for event in events:
-            freq  = freq_map.get(event.violation_type, 1)
+            freq = freq_map.get(event.violation_type, 1)
             vscore = self._compute_violation_score(event, freq)
-            mod   = event.source_module or "unknown"
+            mod = event.source_module or "unknown"
             module_raw[mod] = module_raw.get(mod, 0.0) + vscore.raw_score
 
         # Apply per-module caps
         module_capped: dict[str, float] = {}
         for mod, raw in module_raw.items():
-            cap    = self.config.MODULE_SCORE_CAPS.get(mod, 200.0)
+            cap = self.config.MODULE_SCORE_CAPS.get(mod, 200.0)
             capped = min(raw, cap)
             module_capped[mod] = round(capped, 2)
 
@@ -383,10 +380,9 @@ class RiskScorer:
             7. Classify risk level
             8. Set action flags (warn / alert / terminate)
         """
-        now    = time.time()
+        now = time.time()
         events = [
-            e for module_events in []  # placeholder — see below
-            for e in module_events
+            e for module_events in [] for e in module_events  # placeholder — see below
         ]
 
         # Extract events from report's module stats
@@ -402,7 +398,7 @@ class RiskScorer:
         # Per-module breakdown from report
         module_scores: dict[str, float] = {}
         for mod, stats in report.module_stats.items():
-            cap    = self.config.MODULE_SCORE_CAPS.get(mod, 200.0)
+            cap = self.config.MODULE_SCORE_CAPS.get(mod, 200.0)
             module_scores[mod] = min(stats.total_weight, cap)
 
         # ── Step 3: Apply anomaly multiplier ─────────────────────
@@ -424,7 +420,7 @@ class RiskScorer:
         if level != self._prev_risk_level:
             elapsed = now - self._level_entry_time
             self._risk_level_times[self._prev_risk_level] += elapsed
-            self._prev_risk_level  = level
+            self._prev_risk_level = level
             self._level_entry_time = now
             logger.info(
                 f"Risk level change → {level} | "
@@ -436,30 +432,30 @@ class RiskScorer:
             self._peak_score = dynamic
 
         # ── Step 8: Action flags ──────────────────────────────────
-        should_warn      = dynamic > self.config.SAFE_MAX
-        should_alert     = dynamic > self.config.WARNING_MAX
+        should_warn = dynamic > self.config.SAFE_MAX
+        should_alert = dynamic > self.config.WARNING_MAX
         should_terminate = (
-            dynamic       >= self.config.TERMINATE_SCORE or
-            cheat_prob    >= self.config.TERMINATE_PROBABILITY
+            dynamic >= self.config.TERMINATE_SCORE
+            or cheat_prob >= self.config.TERMINATE_PROBABILITY
         )
 
         snapshot = RiskSnapshot(
-            current_score      = round(dynamic, 2),
-            raw_score          = round(raw_adjusted, 2),
-            cheat_probability  = round(cheat_prob, 4),
-            risk_level         = level,
-            face_score         = module_scores.get("face",    0.0),
-            pose_score         = module_scores.get("pose",    0.0),
-            object_score       = module_scores.get("object",  0.0),
-            audio_score        = module_scores.get("audio",   0.0),
-            browser_score      = module_scores.get("browser", 0.0),
-            should_warn        = should_warn,
-            should_alert_admin = should_alert,
-            should_terminate   = should_terminate,
-            timestamp          = now,
-            session_id         = self.session_id,
-            violation_count    = report.session_total_violations,
-            anomaly_multiplier = report.anomaly_multiplier,
+            current_score=round(dynamic, 2),
+            raw_score=round(raw_adjusted, 2),
+            cheat_probability=round(cheat_prob, 4),
+            risk_level=level,
+            face_score=module_scores.get("face", 0.0),
+            pose_score=module_scores.get("pose", 0.0),
+            object_score=module_scores.get("object", 0.0),
+            audio_score=module_scores.get("audio", 0.0),
+            browser_score=module_scores.get("browser", 0.0),
+            should_warn=should_warn,
+            should_alert_admin=should_alert,
+            should_terminate=should_terminate,
+            timestamp=now,
+            session_id=self.session_id,
+            violation_count=report.session_total_violations,
+            anomaly_multiplier=report.anomaly_multiplier,
         )
 
         self._snapshots.append(snapshot)
@@ -471,9 +467,7 @@ class RiskScorer:
                 f"session={self.session_id}"
             )
         elif should_alert:
-            logger.warning(
-                f"HIGH RISK | score={dynamic:.1f} P={cheat_prob:.3f}"
-            )
+            logger.warning(f"HIGH RISK | score={dynamic:.1f} P={cheat_prob:.3f}")
 
         return snapshot
 
@@ -482,10 +476,10 @@ class RiskScorer:
     # ─────────────────────────────────────────
     def add_violation_direct(
         self,
-        violation_type : str,
-        confidence     : float = 1.0,
-        duration_secs  : float = 0.0,
-        source_module  : str   = "",
+        violation_type: str,
+        confidence: float = 1.0,
+        duration_secs: float = 0.0,
+        source_module: str = "",
     ) -> float:
         """
         Add a single violation directly and return updated score.
@@ -494,13 +488,13 @@ class RiskScorer:
 
         Returns: updated dynamic score (0–100)
         """
-        weight  = self.config.WEIGHTS.get(violation_type, 10)
+        weight = self.config.WEIGHTS.get(violation_type, 10)
         t_thresh = self.config.DURATION_THRESHOLDS.get(
             violation_type, self.config.DEFAULT_DURATION_THRESHOLD
         )
-        di      = 1.0 + (duration_secs / t_thresh) if duration_secs > 0 else 1.0
-        raw     = weight * 1 * confidence * di
-        norm    = self._normalise(raw)
+        di = 1.0 + (duration_secs / t_thresh) if duration_secs > 0 else 1.0
+        raw = weight * 1 * confidence * di
+        norm = self._normalise(raw)
         dynamic = self._sliding_window(norm)
 
         logger.warning(
@@ -515,10 +509,10 @@ class RiskScorer:
     # ─────────────────────────────────────────
     def current_score(self) -> float:
         return float(round(self._dynamic_score, 2))
-    
+
     def current_level(self) -> str:
         return str(self._classify_level(self._dynamic_score))
-    
+
     def current_probability(self) -> float:
         return float(round(self._sigmoid_probability(self._dynamic_score), 4))
 
@@ -531,26 +525,24 @@ class RiskScorer:
         Includes score timeline, level durations, peak.
         """
         # Close out current level timer
-        now     = time.time()
+        now = time.time()
         elapsed = now - self._level_entry_time
         level_times = dict(self._risk_level_times)
         level_times[self._prev_risk_level] += elapsed
 
         return {
-            "session_id"      : self.session_id,
-            "final_score"     : self.current_score(),
-            "peak_score"      : round(self._peak_score, 2),
-            "final_level"     : self.current_level(),
+            "session_id": self.session_id,
+            "final_score": self.current_score(),
+            "peak_score": round(self._peak_score, 2),
+            "final_level": self.current_level(),
             "cheat_probability": self.current_probability(),
-            "total_snapshots" : len(self._snapshots),
-            "time_at_levels"  : {
-                k: round(v, 1) for k, v in level_times.items()
-            },
-            "score_timeline"  : [
+            "total_snapshots": len(self._snapshots),
+            "time_at_levels": {k: round(v, 1) for k, v in level_times.items()},
+            "score_timeline": [
                 {
-                    "timestamp"  : s.timestamp,
-                    "score"      : s.current_score,
-                    "level"      : s.risk_level,
+                    "timestamp": s.timestamp,
+                    "score": s.current_score,
+                    "level": s.risk_level,
                     "probability": s.cheat_probability,
                 }
                 for s in self._snapshots[::5]  # every 5th for size
@@ -559,11 +551,11 @@ class RiskScorer:
 
     def reset(self):
         """Clear state for a new session."""
-        self._dynamic_score    = 0.0
+        self._dynamic_score = 0.0
         self._snapshots.clear()
         self._all_events.clear()
-        self._peak_score       = 0.0
-        self._prev_risk_level  = RiskLevel.SAFE
+        self._peak_score = 0.0
+        self._prev_risk_level = RiskLevel.SAFE
         self._level_entry_time = time.time()
         self._risk_level_times = {k: 0.0 for k in self._risk_level_times}
         logger.info(f"RiskScorer reset | session={self.session_id}")
@@ -574,46 +566,49 @@ class RiskScorer:
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     from ai_engine.behaviour_module.anomaly_detector import (
-        AnomalyDetector, ViolationEvent
+        AnomalyDetector,
+        ViolationEvent,
     )
 
     print("\n── RiskScorer standalone test ───────────────────────────")
 
-    det    = AnomalyDetector()
+    det = AnomalyDetector()
     scorer = RiskScorer(session_id="test_session")
-    now    = time.time()
+    now = time.time()
 
     # Simulate escalating exam violations
     phases = [
         # Phase 1 — quiet start
         [
-            ViolationEvent("LOOKING_AWAY", now-110, 15, 0.90, 2.0, "pose"),
-            ViolationEvent("LOOKING_AWAY", now-100, 15, 0.88, 1.8, "pose"),
+            ViolationEvent("LOOKING_AWAY", now - 110, 15, 0.90, 2.0, "pose"),
+            ViolationEvent("LOOKING_AWAY", now - 100, 15, 0.88, 1.8, "pose"),
         ],
         # Phase 2 — getting suspicious
         [
-            ViolationEvent("TAB_SWITCH",      now-80, 20, 1.00, 0.0, "browser"),
-            ViolationEvent("SPEECH_BURST",    now-70, 10, 0.75, 1.5, "audio"),
-            ViolationEvent("LOOKING_AWAY",    now-60, 15, 0.91, 3.0, "pose"),
-            ViolationEvent("LOOKING_AWAY",    now-50, 15, 0.94, 2.5, "pose"),
+            ViolationEvent("TAB_SWITCH", now - 80, 20, 1.00, 0.0, "browser"),
+            ViolationEvent("SPEECH_BURST", now - 70, 10, 0.75, 1.5, "audio"),
+            ViolationEvent("LOOKING_AWAY", now - 60, 15, 0.91, 3.0, "pose"),
+            ViolationEvent("LOOKING_AWAY", now - 50, 15, 0.94, 2.5, "pose"),
         ],
         # Phase 3 — coordinated attempt
         [
-            ViolationEvent("PHONE_DETECTED",  now-30, 40, 0.97, 0.0, "object"),
-            ViolationEvent("SUSTAINED_SPEECH",now-25, 20, 0.85, 4.0, "audio"),
-            ViolationEvent("TAB_SWITCH",      now-20, 20, 1.00, 0.0, "browser"),
-            ViolationEvent("PHONE_DETECTED",  now-15, 40, 0.99, 0.0, "object"),
-            ViolationEvent("MULTI_SPEAKER",   now-10, 30, 0.82, 0.0, "audio"),
-            ViolationEvent("FACE_MISMATCH",   now- 5, 40, 0.88, 0.0, "face"),
+            ViolationEvent("PHONE_DETECTED", now - 30, 40, 0.97, 0.0, "object"),
+            ViolationEvent("SUSTAINED_SPEECH", now - 25, 20, 0.85, 4.0, "audio"),
+            ViolationEvent("TAB_SWITCH", now - 20, 20, 1.00, 0.0, "browser"),
+            ViolationEvent("PHONE_DETECTED", now - 15, 40, 0.99, 0.0, "object"),
+            ViolationEvent("MULTI_SPEAKER", now - 10, 30, 0.82, 0.0, "audio"),
+            ViolationEvent("FACE_MISMATCH", now - 5, 40, 0.88, 0.0, "face"),
         ],
     ]
 
-    print(f"\n  {'Phase':<10} {'Score':>8} {'Level':<12} {'P(cheat)':>10} {'Terminate?':>12}")
+    print(
+        f"\n  {'Phase':<10} {'Score':>8} {'Level':<12} {'P(cheat)':>10} {'Terminate?':>12}"
+    )
     print(f"  {'-'*54}")
 
     for i, phase_events in enumerate(phases, 1):
         det.add_events(phase_events)
-        report   = det.analyze()
+        report = det.analyze()
         snapshot = scorer.update(report)
 
         print(

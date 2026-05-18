@@ -39,27 +39,27 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 #  Model path  — resolved relative to this file
 # ─────────────────────────────────────────────
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH  = os.path.join(BASE_DIR, "models", "finalBestV5.pt")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "models", "finalBestV5.pt")
 
 
 # ─────────────────────────────────────────────
 #  Risk weights  (fed to risk_engine/scoring.py)
 # ─────────────────────────────────────────────
 VIOLATION_WEIGHTS = {
-    "cell_phone" : 40,
-    "book"       : 25,
-    "headphone"  : 30,
-    "earbud"     : 30,
+    "cell_phone": 40,
+    "book": 25,
+    "headphone": 30,
+    "earbud": 30,
 }
 
 # Visual colours per class  (BGR)
 CLASS_COLORS = {
-    "cell_phone" : (0,  60, 255),   # red
-    "book"       : (0, 180, 255),   # orange
-    "headphone"  : (180, 0, 255),   # purple
-    "earbud"     : (255, 0, 180),   # pink
-    "person"     : (0, 230, 100),   # green
+    "cell_phone": (0, 60, 255),  # red
+    "book": (0, 180, 255),  # orange
+    "headphone": (180, 0, 255),  # purple
+    "earbud": (255, 0, 180),  # pink
+    "person": (0, 230, 100),  # green
 }
 
 
@@ -69,27 +69,29 @@ CLASS_COLORS = {
 @dataclass
 class Detection:
     """Single object detected in one frame."""
-    cls:        str
+
+    cls: str
     confidence: float
-    bbox:       tuple       # (x1, y1, x2, y2)
-    weight:     int = 0     # risk weight from VIOLATION_WEIGHTS
+    bbox: tuple  # (x1, y1, x2, y2)
+    weight: int = 0  # risk weight from VIOLATION_WEIGHTS
 
 
 @dataclass
 class ObjectViolationEvent:
     """Raised when a cheating object is confirmed detected."""
-    timestamp:    float
-    cls:          str
-    confidence:   float
-    bbox:         tuple
-    weight:       int
-    frame_path:   Optional[str] = None   # screenshot saved path
+
+    timestamp: float
+    cls: str
+    confidence: float
+    bbox: tuple
+    weight: int
+    frame_path: Optional[str] = None  # screenshot saved path
 
 
 @dataclass
 class ObjectSessionStats:
-    total_violations:    int  = 0
-    violation_events:    list = field(default_factory=list)
+    total_violations: int = 0
+    violation_events: list = field(default_factory=list)
     last_violation_time: dict = field(default_factory=dict)  # per-class cooldown
 
 
@@ -98,20 +100,21 @@ class ObjectSessionStats:
 # ─────────────────────────────────────────────
 def compute_iou(boxA, boxB) -> float:
     """Intersection over Union for two (x1,y1,x2,y2) boxes."""
-    xA = max(boxA[0], boxB[0]);  yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2]);  yB = min(boxA[3], boxB[3])
-    inter_w  = max(0, xB - xA)
-    inter_h  = max(0, yB - yA)
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    inter_w = max(0, xB - xA)
+    inter_h = max(0, yB - yA)
     inter_area = inter_w * inter_h
     if inter_area == 0:
         return 0.0
-    aA = (boxA[2]-boxA[0]) * (boxA[3]-boxA[1])
-    aB = (boxB[2]-boxB[0]) * (boxB[3]-boxB[1])
+    aA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    aB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
     return inter_area / float(aA + aB - inter_area)
 
 
-def merge_by_class(detections: list, classes: set,
-                   iou_threshold: float = 0.5) -> list:
+def merge_by_class(detections: list, classes: set, iou_threshold: float = 0.5) -> list:
     """
     For each class in `classes`, collapse overlapping boxes
     (IoU >= threshold) keeping the largest box per cluster.
@@ -143,8 +146,8 @@ def merge_by_class(detections: list, classes: set,
         for cluster in clusters:
             best = max(
                 cluster,
-                key=lambda d: (d["bbox"][2]-d["bbox"][0]) *
-                              (d["bbox"][3]-d["bbox"][1])
+                key=lambda d: (d["bbox"][2] - d["bbox"][0])
+                * (d["bbox"][3] - d["bbox"][1]),
             )
             final.append(best)
     return final
@@ -168,27 +171,27 @@ class ObjectDetector:
     """
 
     # ── cheating classes the model should care about ──────────────────
-    CHEAT_CLASSES  = {"cell_phone", "book", "headphone", "earbud"}
-    ALL_CLASSES    = CHEAT_CLASSES | {"person"}
+    CHEAT_CLASSES = {"cell_phone", "book", "headphone", "earbud"}
+    ALL_CLASSES = CHEAT_CLASSES | {"person"}
 
     # ── per-class violation cooldown (seconds) ────────────────────────
     VIOLATION_COOLDOWN = {
-        "cell_phone" : 5.0,
-        "book"       : 8.0,
-        "headphone"  : 8.0,
-        "earbud"     : 8.0,
+        "cell_phone": 5.0,
+        "book": 8.0,
+        "headphone": 8.0,
+        "earbud": 8.0,
     }
 
     def __init__(
         self,
-        model_path:   str   = MODEL_PATH,
+        model_path: str = MODEL_PATH,
         default_conf: float = 0.50,
-        person_conf:  float = 0.40,
-        phone_conf:   float = 0.60,
-        book_conf:  float=0.70,
-        audio_conf: float=0.50,  # headphones and earbuds often have lower confidence, so a lower threshold can help catch more without too many false positives 
-        save_screenshots: bool  = True,
-        screenshot_dir:   str   = "storage/screenshots/objects",
+        person_conf: float = 0.40,
+        phone_conf: float = 0.60,
+        book_conf: float = 0.70,
+        audio_conf: float = 0.50,  # headphones and earbuds often have lower confidence, so a lower threshold can help catch more without too many false positives
+        save_screenshots: bool = True,
+        screenshot_dir: str = "storage/screenshots/objects",
     ):
         if not os.path.exists(model_path):
             raise FileNotFoundError(
@@ -196,23 +199,23 @@ class ObjectDetector:
                 f"Place your .pt file at:\n  {model_path}\n"
             )
 
-        self.model        = YOLO(model_path)
+        self.model = YOLO(model_path)
         self.default_conf = default_conf
-        self.person_conf  = person_conf
-        self.stats        = ObjectSessionStats()
+        self.person_conf = person_conf
+        self.stats = ObjectSessionStats()
 
         self.save_screenshots = save_screenshots
-        self.screenshot_dir   = screenshot_dir
+        self.screenshot_dir = screenshot_dir
         if save_screenshots:
             os.makedirs(screenshot_dir, exist_ok=True)
 
         # Per-class confidence thresholds (your original logic)
         self.class_thresholds = {
-            "cell_phone" : phone_conf,
-            "book"       : book_conf,
-            "headphone"  : audio_conf,
-            "earbud"     : audio_conf,
-            "person"     : person_conf,
+            "cell_phone": phone_conf,
+            "book": book_conf,
+            "headphone": audio_conf,
+            "earbud": audio_conf,
+            "person": person_conf,
         }
 
         logger.info(f"ObjectDetector ready. Model: {model_path}")
@@ -233,8 +236,8 @@ class ObjectDetector:
         for r in results:
             for box in r.boxes:
                 cls_id = int(box.cls[0])
-                name   = self.model.names[cls_id]
-                conf   = float(box.conf[0])
+                name = self.model.names[cls_id]
+                conf = float(box.conf[0])
 
                 if name not in self.ALL_CLASSES:
                     continue
@@ -244,11 +247,13 @@ class ObjectDetector:
                     continue
 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                raw.append({
-                    "class"     : name,
-                    "confidence": round(conf, 3),
-                    "bbox"      : (x1, y1, x2, y2),
-                })
+                raw.append(
+                    {
+                        "class": name,
+                        "confidence": round(conf, 3),
+                        "bbox": (x1, y1, x2, y2),
+                    }
+                )
 
         # Suppress duplicate boxes per class
         merged = merge_by_class(raw, self.ALL_CLASSES, iou_threshold=0.5)
@@ -268,12 +273,14 @@ class ObjectDetector:
         raw_dets = self._run_model(frame)
         detections = []
         for d in raw_dets:
-            detections.append(Detection(
-                cls        = d["class"],
-                confidence = d["confidence"],
-                bbox       = d["bbox"],
-                weight     = VIOLATION_WEIGHTS.get(d["class"], 0),
-            ))
+            detections.append(
+                Detection(
+                    cls=d["class"],
+                    confidence=d["confidence"],
+                    bbox=d["bbox"],
+                    weight=VIOLATION_WEIGHTS.get(d["class"], 0),
+                )
+            )
         return detections
 
     # ─────────────────────────────────────────
@@ -282,7 +289,7 @@ class ObjectDetector:
     def check_violations(
         self,
         detections: list[Detection],
-        frame = None,
+        frame=None,
     ) -> list[ObjectViolationEvent]:
         """
         Converts detections into violation events with per-class cooldown.
@@ -294,7 +301,7 @@ class ObjectDetector:
         Returns:
             List of new ObjectViolationEvent (may be empty).
         """
-        now    = time.time()
+        now = time.time()
         events = []
 
         for det in detections:
@@ -305,23 +312,23 @@ class ObjectDetector:
             cooldown = self.VIOLATION_COOLDOWN.get(det.cls, 5.0)
 
             if (now - last) < cooldown:
-                continue    # still in cooldown for this class
+                continue  # still in cooldown for this class
 
             # ── Violation confirmed ──────────────────────────────────
             frame_path = None
             if self.save_screenshots and frame is not None:
-                fname = (f"{det.cls}_{now:.0f}_"
-                         f"conf{det.confidence:.2f}.jpg")
+                fname = f"{det.cls}_{now:.0f}_" f"conf{det.confidence:.2f}.jpg"
+
                 frame_path = os.path.join(self.screenshot_dir, fname)
                 cv2.imwrite(frame_path, frame)
 
             event = ObjectViolationEvent(
-                timestamp  = now,
-                cls        = det.cls,
-                confidence = det.confidence,
-                bbox       = det.bbox,
-                weight     = det.weight,
-                frame_path = frame_path,
+                timestamp=now,
+                cls=det.cls,
+                confidence=det.confidence,
+                bbox=det.bbox,
+                weight=det.weight,
+                frame_path=frame_path,
             )
             self.stats.total_violations += 1
             self.stats.last_violation_time[det.cls] = now
@@ -354,16 +361,16 @@ class ObjectDetector:
     def get_session_summary(self) -> dict:
         """Serialisable dict consumed by report_service.py."""
         return {
-            "total_violations" : self.stats.total_violations,
+            "total_violations": self.stats.total_violations,
             "risk_contribution": self.get_risk_contribution(),
-            "violation_events" : [
+            "violation_events": [
                 {
-                    "timestamp"  : e.timestamp,
-                    "class"      : e.cls,
-                    "confidence" : e.confidence,
-                    "bbox"       : e.bbox,
-                    "weight"     : e.weight,
-                    "screenshot" : e.frame_path,
+                    "timestamp": e.timestamp,
+                    "class": e.cls,
+                    "confidence": e.confidence,
+                    "bbox": e.bbox,
+                    "weight": e.weight,
+                    "screenshot": e.frame_path,
                 }
                 for e in self.stats.violation_events
             ],
@@ -372,12 +379,13 @@ class ObjectDetector:
     # ─────────────────────────────────────────
     #  Drawing helpers
     # ─────────────────────────────────────────
-    def draw_detections(self, frame, detections: list[Detection],
-                        events: list[ObjectViolationEvent]):
+    def draw_detections(
+        self, frame, detections: list[Detection], events: list[ObjectViolationEvent]
+    ):
         """Draw bounding boxes and labels on frame (in-place)."""
         for det in detections:
             x1, y1, x2, y2 = det.bbox
-            color   = CLASS_COLORS.get(det.cls, (200, 200, 200))
+            color = CLASS_COLORS.get(det.cls, (200, 200, 200))
             is_viol = any(e.cls == det.cls for e in events)
 
             # Box
@@ -388,26 +396,44 @@ class ObjectDetector:
             label = f"{det.cls}  {det.confidence:.2f}"
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
-            cv2.putText(frame, label, (x1 + 3, y1 - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(
+                frame,
+                label,
+                (x1 + 3, y1 - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
 
         # Violation banner
         if events:
             names = ", ".join(set(e.cls for e in events)).upper()
-            h, w  = frame.shape[:2]
+            h, w = frame.shape[:2]
             cv2.rectangle(frame, (0, h - 50), (w, h), (0, 0, 160), -1)
-            cv2.putText(frame,
-                        f"  VIOLATION DETECTED: {names}",
-                        (10, h - 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+            cv2.putText(
+                frame,
+                f"  VIOLATION DETECTED: {names}",
+                (10, h - 16),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+            )
 
     def _draw_hud(self, frame, detections, events):
         h, w = frame.shape[:2]
         cv2.rectangle(frame, (0, 0), (280, 40), (15, 15, 15), -1)
         warn = (0, 180, 255)
-        cv2.putText(frame,
-                    f"OBJECTS  violations: {self.stats.total_violations}",
-                    (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, warn, 2)
+        cv2.putText(
+            frame,
+            f"OBJECTS  violations: {self.stats.total_violations}",
+            (8, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            warn,
+            2,
+        )
         self.draw_detections(frame, detections, events)
 
     # ─────────────────────────────────────────
@@ -428,7 +454,7 @@ class ObjectDetector:
             if not ret:
                 break
 
-            detections  = self.detect(frame)
+            detections = self.detect(frame)
             last_events = self.check_violations(detections, frame)
 
             self._draw_hud(frame, detections, last_events)
@@ -445,16 +471,19 @@ class ObjectDetector:
         print(f"  Total Violations  : {s['total_violations']}")
         print(f"  Risk Contribution : {s['risk_contribution']}")
         for i, e in enumerate(s["violation_events"], 1):
-            print(f"  [{i}] {e['class'].upper():12s} | "
-                  f"conf {e['confidence']:.2f} | "
-                  f"weight {e['weight']} | "
-                  f"screenshot: {e['screenshot']}")
+            print(
+                f"  [{i}] {e['class'].upper():12s} | "
+                f"conf {e['confidence']:.2f} | "
+                f"weight {e['weight']} | "
+                f"screenshot: {e['screenshot']}"
+            )
         print("─────────────────────────────────────────────────────\n")
 
 
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     import os
-    os.environ["QT_QPA_PLATFORM"] = "xcb"   # Ubuntu/Wayland fix
+
+    os.environ["QT_QPA_PLATFORM"] = "xcb"  # Ubuntu/Wayland fix
     detector = ObjectDetector()
     detector.run_webcam()
